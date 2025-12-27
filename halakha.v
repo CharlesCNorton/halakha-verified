@@ -83,10 +83,29 @@ Module TalmudicHermeneutics.
   Definition authority_eq_dec : forall a1 a2 : Authority, {a1 = a2} + {a1 <> a2}.
   Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
 
-  (** Halakhic propositions: carry identity, scope, and authority. *)
+  (** Deontic modality: obligates, permits, or forbids. *)
+  Inductive Modality : Type :=
+    | Obligates : Modality
+    | Permits : Modality
+    | Forbids : Modality.
+
+  Definition modality_eq_dec : forall m1 m2 : Modality, {m1 = m2} + {m1 <> m2}.
+  Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+  Definition modalities_conflict (m1 m2 : Modality) : bool :=
+    match m1, m2 with
+    | Obligates, Forbids => true
+    | Forbids, Obligates => true
+    | Permits, Forbids => true
+    | Forbids, Permits => true
+    | _, _ => false
+    end.
+
+  (** Halakhic propositions: carry identity, scope, modality, and authority. *)
   Record Halakha := mkHalakha {
     halakha_id : nat;
     halakha_scope : Subject -> Prop;
+    halakha_modality : Modality;
     halakha_authority : Authority
   }.
 
@@ -176,8 +195,60 @@ Module TalmudicHermeneutics.
     split; assumption.
   Qed.
 
-  (** Explicit verses from which halakhot are directly derived (peshat). *)
-  Parameter base_derivation : Halakha -> Verse -> Prop.
+  (** Torah corpus: explicit pairings of halakha-id to verse-id representing peshat. *)
+  Definition CorpusEntry := (nat * nat)%type.
+  Definition Corpus := list CorpusEntry.
+
+  Definition corpus_contains (c : Corpus) (hid vid : nat) : Prop :=
+    In (hid, vid) c.
+
+  Definition corpus_contains_b (c : Corpus) (hid vid : nat) : bool :=
+    existsb (fun entry => Nat.eqb (fst entry) hid && Nat.eqb (snd entry) vid) c.
+
+  Lemma corpus_contains_b_correct : forall c hid vid,
+    corpus_contains_b c hid vid = true <-> corpus_contains c hid vid.
+  Proof.
+    intros c hid vid.
+    unfold corpus_contains_b, corpus_contains.
+    rewrite existsb_exists.
+    split.
+    - intros [[h v] [Hin Heq]].
+      simpl in Heq. rewrite andb_true_iff in Heq.
+      destruct Heq as [Hh Hv].
+      rewrite Nat.eqb_eq in Hh, Hv. subst.
+      exact Hin.
+    - intro Hin.
+      exists (hid, vid). split.
+      + exact Hin.
+      + simpl. rewrite 2 Nat.eqb_refl. reflexivity.
+  Qed.
+
+  Definition torah_corpus : Corpus :=
+    [ (1, 1); (2, 2); (3, 1); (4, 3) ].
+
+  Definition base_derivation (h : Halakha) (v : Verse) : Prop :=
+    corpus_contains torah_corpus (halakha_id h) (verse_id v).
+
+  Definition base_derivation_b (h : Halakha) (v : Verse) : bool :=
+    corpus_contains_b torah_corpus (halakha_id h) (verse_id v).
+
+  Lemma base_derivation_b_correct : forall h v,
+    base_derivation_b h v = true <-> base_derivation h v.
+  Proof.
+    intros h v.
+    unfold base_derivation_b, base_derivation.
+    apply corpus_contains_b_correct.
+  Qed.
+
+  Lemma corpus_consistent : NoDup (map fst torah_corpus).
+  Proof.
+    unfold torah_corpus. simpl.
+    apply NoDup_cons. { simpl. intros [H|[H|[H|H]]]; discriminate || exact H. }
+    apply NoDup_cons. { simpl. intros [H|[H|H]]; discriminate || exact H. }
+    apply NoDup_cons. { simpl. intros [H|H]; discriminate || exact H. }
+    apply NoDup_cons. { simpl. intros H; exact H. }
+    apply NoDup_nil.
+  Qed.
 
   Inductive derived_from : Halakha -> Verse -> Prop :=
     | derived_base : forall h v,
@@ -230,11 +301,28 @@ Module TalmudicHermeneutics.
 
   (** Validity predicates for each middah. *)
 
-  (** Kal va-chomer: if h applies to the lenient case, it applies to the strict case. *)
+  (** Kal va-chomer: if h applies to the lenient case, it applies to the strict case.
+      The dayo principle (Bava Kamma 25a): the derived stringency cannot exceed
+      the source stringency. We model this by requiring the conclusion's scope
+      to be no broader than justified by the premise. *)
   Definition valid_kal_va_chomer (lenient strict : Subject) (h : Halakha) : Prop :=
     stricter strict lenient /\
     applies_to h lenient ->
     applies_to h strict.
+
+  (** Dayo: the conclusion of kal va-chomer is limited to what the premise establishes.
+      "It is sufficient (dayo) for the derived law to be equal to the source law." *)
+  Definition dayo_satisfied (h_premise h_conclusion : Halakha) (strict : Subject) : Prop :=
+    forall s, applies_to h_conclusion s ->
+      applies_to h_premise s \/ subject_id s = subject_id strict.
+
+  Definition valid_kal_va_chomer_with_dayo
+    (lenient strict : Subject) (h_premise h_conclusion : Halakha) : Prop :=
+    stricter strict lenient /\
+    applies_to h_premise lenient /\
+    halakha_eq_id h_premise h_conclusion /\
+    dayo_satisfied h_premise h_conclusion strict /\
+    applies_to h_conclusion strict.
 
   (** Gezerah shavah: identical words in two verses create analogy. *)
   (** Requires mesorah_link: proof-carrying certificate for the word-verse pair. *)
@@ -272,10 +360,38 @@ Module TalmudicHermeneutics.
     applies_to h s2.
 
   (** Klal u-frat: general followed by particular means only the particular. *)
+
+  Definition word_kol : Word := 100.
+  Definition word_ish : Word := 101.
+  Definition word_davar : Word := 102.
+
+  Definition quantifier_words : list Word := [word_kol; 103; 104].
+  Definition specific_words : list Word := [word_ish; word_davar; 105; 106].
+
+  Definition has_quantifier (v : Verse) : Prop :=
+    exists w, In w (verse_words v) /\ In w quantifier_words.
+
+  Definition has_specific (v : Verse) : Prop :=
+    exists w, In w (verse_words v) /\ In w specific_words.
+
   Definition is_general (v : Verse) : Prop :=
-    length (verse_words v) > 3.
+    has_quantifier v /\ ~ has_specific v.
+
   Definition is_particular (v : Verse) : Prop :=
-    length (verse_words v) <= 3.
+    has_specific v /\ ~ has_quantifier v.
+
+  Definition has_quantifier_b (v : Verse) : bool :=
+    existsb (fun w => existsb (Nat.eqb w) quantifier_words) (verse_words v).
+
+  Definition has_specific_b (v : Verse) : bool :=
+    existsb (fun w => existsb (Nat.eqb w) specific_words) (verse_words v).
+
+  Definition is_general_b_new (v : Verse) : bool :=
+    has_quantifier_b v && negb (has_specific_b v).
+
+  Definition is_particular_b_new (v : Verse) : bool :=
+    has_specific_b v && negb (has_quantifier_b v).
+
   Definition particularizes (prat klal : Verse) : Prop :=
     incl (verse_words prat) (verse_words klal).
 
@@ -316,8 +432,27 @@ Module TalmudicHermeneutics.
 
   (** Shnei ketuvim makhchishim: two contradictory verses resolved by a third. *)
 
-  (** Semantic incompatibility: halakhot conflict on a subject. *)
-  Parameter incompatible : Halakha -> Halakha -> Subject -> Prop.
+  Definition incompatible (h1 h2 : Halakha) (s : Subject) : Prop :=
+    halakha_scope h1 s /\
+    halakha_scope h2 s /\
+    modalities_conflict (halakha_modality h1) (halakha_modality h2) = true.
+
+  Definition incompatible_b (h1 h2 : Halakha) (s : Subject) : bool :=
+    modalities_conflict (halakha_modality h1) (halakha_modality h2).
+
+  Lemma incompatible_sym : forall h1 h2 s,
+    incompatible h1 h2 s -> incompatible h2 h1 s.
+  Proof.
+    intros h1 h2 s [Hs1 [Hs2 Hm]].
+    unfold incompatible.
+    split. exact Hs2.
+    split. exact Hs1.
+    destruct (halakha_modality h1), (halakha_modality h2); simpl in *; auto.
+  Qed.
+
+  Lemma modalities_conflict_sym : forall m1 m2,
+    modalities_conflict m1 m2 = modalities_conflict m2 m1.
+  Proof. intros [] []; reflexivity. Qed.
 
   Definition halakha_conflicts (h1 h2 : Halakha) : Prop :=
     exists s, halakha_scope h1 s /\ halakha_scope h2 s /\ incompatible h1 h2 s.
@@ -525,6 +660,7 @@ Module TalmudicHermeneutics.
         tree_verses t = [v] ->
         derived_from h_teaching v ->
         halakha_eq_id h_general h_teaching ->
+        (forall s, halakha_scope h_teaching s -> halakha_scope h_general s) ->
         (exists s, halakha_scope h_general s /\ ~ halakha_scope h_teaching s) ->
         valid_node DavarYatzaLeLamed [t] h_teaching
 
@@ -540,8 +676,130 @@ Module TalmudicHermeneutics.
         ~ halakha_conflicts h_out h2 ->
         valid_node ShneiKetuvimMakhchishim [t1; t2; t3] h_out.
 
+  (** Bridging theorems: connect standalone predicates to tree semantics. *)
+
+  Theorem gezerah_shavah_bridge : forall v1 v2 w h,
+    valid_gezerah_shavah v1 v2 w h ->
+    derived_from h v2.
+  Proof.
+    intros v1 v2 w h [gsd [Hv1 [Hv2 [Hw Hh]]]].
+    subst.
+    apply derived_gezerah_shavah with (v1 := gs_v1 gsd) (w := gs_word gsd).
+    - exact (gs_derived_v1 gsd).
+    - exact (gs_mesorah_link gsd).
+  Qed.
+
+  Theorem klal_u_frat_bridge : forall klal prat h_in h_out restriction,
+    valid_klal_u_frat klal prat h_in h_out restriction ->
+    forall s, halakha_scope h_out s -> halakha_scope h_in s.
+  Proof.
+    intros klal prat h_in h_out restriction Hvalid s Hout.
+    unfold valid_klal_u_frat in Hvalid.
+    destruct Hvalid as [_ [_ [_ [_ Hscope]]]].
+    apply Hscope in Hout. destruct Hout. exact H.
+  Qed.
+
+  Theorem prat_u_klal_bridge : forall prat klal h_in h_out,
+    valid_prat_u_klal prat klal h_in h_out ->
+    forall s, halakha_scope h_in s -> halakha_scope h_out s.
+  Proof.
+    intros prat klal h_in h_out Hvalid s Hin.
+    unfold valid_prat_u_klal in Hvalid.
+    destruct Hvalid as [_ [_ [_ [_ Hexpand]]]].
+    apply Hexpand. exact Hin.
+  Qed.
+
+  Theorem shnei_ketuvim_bridge : forall v1 v2 v3 h,
+    valid_shnei_ketuvim v1 v2 v3 h ->
+    derived_from h v3.
+  Proof.
+    intros v1 v2 v3 h [_ [_ Hd]]. exact Hd.
+  Qed.
+
+  Theorem davar_she_hayah_bridge : forall h_gen h_exc h_out,
+    valid_davar_she_hayah h_gen h_exc h_out ->
+    forall s, halakha_scope h_out s -> halakha_scope h_gen s /\ ~ halakha_scope h_exc s.
+  Proof.
+    intros h_gen h_exc h_out Hvalid s Hout.
+    unfold valid_davar_she_hayah in Hvalid.
+    destruct Hvalid as [_ [_ Hscope]].
+    apply Hscope. exact Hout.
+  Qed.
+
   (** Universe of valid halakhot: restricts what halakhot can appear in derivations. *)
-  Parameter valid_halakha : Halakha -> Prop.
+  Definition halakha_universe : list nat := [1; 2; 3; 4; 5; 6; 7; 8; 9; 10].
+
+  Definition valid_halakha (h : Halakha) : Prop :=
+    In (halakha_id h) halakha_universe.
+
+  Definition valid_halakha_b (h : Halakha) : bool :=
+    existsb (Nat.eqb (halakha_id h)) halakha_universe.
+
+  Lemma valid_halakha_b_correct : forall h,
+    valid_halakha_b h = true <-> valid_halakha h.
+  Proof.
+    intro h.
+    unfold valid_halakha_b, valid_halakha.
+    rewrite existsb_exists.
+    split.
+    - intros [x [Hin Heq]]. rewrite Nat.eqb_eq in Heq. subst. exact Hin.
+    - intro Hin. exists (halakha_id h). split. exact Hin. apply Nat.eqb_refl.
+  Qed.
+
+  Lemma halakha_universe_nodup : NoDup halakha_universe.
+  Proof.
+    unfold halakha_universe.
+    repeat (apply NoDup_cons; [simpl; intros H; repeat destruct H as [H|H]; try discriminate; try exact H |]).
+    apply NoDup_nil.
+  Qed.
+
+  (** Closure lemmas: valid_halakha is preserved by middot when IDs match. *)
+
+  Lemma valid_halakha_preserved_by_id : forall h1 h2,
+    halakha_eq_id h1 h2 ->
+    valid_halakha h1 ->
+    valid_halakha h2.
+  Proof.
+    intros h1 h2 Heq Hv1.
+    unfold valid_halakha, halakha_eq_id in *.
+    rewrite <- Heq. exact Hv1.
+  Qed.
+
+  Lemma valid_halakha_klal_u_frat : forall klal prat h_in h_out restriction,
+    valid_klal_u_frat klal prat h_in h_out restriction ->
+    valid_halakha h_in ->
+    valid_halakha h_out.
+  Proof.
+    intros klal prat h_in h_out restriction Hvalid Hvin.
+    unfold valid_klal_u_frat in Hvalid.
+    destruct Hvalid as [_ [_ [_ [Heq _]]]].
+    unfold valid_halakha, halakha_eq_id in *.
+    rewrite <- Heq. exact Hvin.
+  Qed.
+
+  Lemma valid_halakha_prat_u_klal : forall prat klal h_in h_out,
+    valid_prat_u_klal prat klal h_in h_out ->
+    valid_halakha h_in ->
+    valid_halakha h_out.
+  Proof.
+    intros prat klal h_in h_out Hvalid Hvin.
+    unfold valid_prat_u_klal in Hvalid.
+    destruct Hvalid as [_ [_ [_ [Heq _]]]].
+    unfold valid_halakha, halakha_eq_id in *.
+    rewrite <- Heq. exact Hvin.
+  Qed.
+
+  Lemma valid_halakha_davar_she_hayah : forall h_gen h_exc h_out,
+    valid_davar_she_hayah h_gen h_exc h_out ->
+    valid_halakha h_gen ->
+    valid_halakha h_out.
+  Proof.
+    intros h_gen h_exc h_out Hvalid Hvgen.
+    unfold valid_davar_she_hayah in Hvalid.
+    destruct Hvalid as [_ [Heq _]].
+    unfold valid_halakha, halakha_eq_id in *.
+    rewrite <- Heq. exact Hvgen.
+  Qed.
 
   (** Authority-safe derivation helpers. *)
   Definition child_authority (t : DerivationTree) : Authority :=
@@ -550,17 +808,25 @@ Module TalmudicHermeneutics.
     | None => DRabbanan
     end.
 
-  Definition max_child_authority (children : list DerivationTree) : Authority :=
-    if existsb (fun t => authority_ge_b (child_authority t) DOraita) children
+  Definition min_child_authority (children : list DerivationTree) : Authority :=
+    if forallb (fun t => authority_ge_b (child_authority t) DOraita) children
     then DOraita
     else DRabbanan.
 
   Definition authority_safe_node (m : Middah) (children : list DerivationTree) (h : Halakha) : Prop :=
-    authority_ge (halakha_authority h) (max_child_authority children).
+    authority_ge (min_child_authority children) (halakha_authority h).
 
-  Definition kal_va_chomer_safe (h_in h_out : Halakha) : Prop :=
-    halakha_authority h_in = DRabbanan ->
-    halakha_authority h_out = DRabbanan.
+  Lemma authority_safe_no_upgrade : forall m children h,
+    authority_safe_node m children h ->
+    halakha_authority h = DOraita ->
+    min_child_authority children = DOraita.
+  Proof.
+    intros m children h Hsafe Hauth.
+    unfold authority_safe_node in Hsafe.
+    rewrite Hauth in Hsafe.
+    destruct (min_child_authority children); auto.
+    simpl in Hsafe. contradiction.
+  Qed.
 
   (** Unified well-formedness: structural validity, authority, and universe membership. *)
   Fixpoint well_formed (t : DerivationTree) : Prop :=
@@ -693,9 +959,10 @@ Module TalmudicHermeneutics.
     forall v h,
       karaite_derivation v h ->
       valid_halakha h ->
+      halakha_authority h = DRabbanan ->
       rabbinic_derivation v h.
   Proof.
-    intros v h Hd Hvalid.
+    intros v h Hd Hvalid Hauth.
     unfold rabbinic_derivation, karaite_derivation in *.
     exists (Node DavarHaLamedMeInyano [Leaf v] h).
     split.
@@ -707,8 +974,8 @@ Module TalmudicHermeneutics.
         * split.
           { exact Hvalid. }
           { split.
-            - unfold authority_safe_node, max_child_authority. simpl.
-              destruct (halakha_authority h); simpl; exact I.
+            - unfold authority_safe_node, min_child_authority. simpl.
+              rewrite Hauth. simpl. exact I.
             - split; exact I. }
   Qed.
 
@@ -773,21 +1040,21 @@ Module TalmudicHermeneutics.
     apply Nat.lt_succ_diag_r.
   Qed.
 
-  (** Middah application preserves authority floor. *)
-  Theorem middah_authority_floor :
+  (** Middah application cannot upgrade authority. *)
+  Theorem middah_authority_ceiling :
     forall m t h,
       well_formed (Node m [t] h) ->
-      authority_ge (halakha_authority h) (child_authority t).
+      authority_ge (child_authority t) (halakha_authority h).
   Proof.
     intros m t h Hawf.
     simpl in Hawf.
     destruct Hawf as [_ [_ [Hsafe _]]].
-    unfold authority_safe_node, max_child_authority, child_authority in *.
+    unfold authority_safe_node, min_child_authority, child_authority in *.
     simpl in Hsafe.
     destruct (tree_conclusion t) as [h'|].
     - destruct (halakha_authority h') eqn:Eh';
       destruct (halakha_authority h) eqn:Hauth; simpl in *; auto.
-    - destruct (halakha_authority h); simpl; exact I.
+    - destruct (halakha_authority h) eqn:Hauth; simpl in *; auto.
   Qed.
 
   (** Kal va-chomer cannot create d'Oraita from d'Rabbanan. *)
@@ -880,9 +1147,142 @@ Module TalmudicHermeneutics.
     | None, None => None
     end.
 
+  (** Dayo prevents over-extension: if dayo is satisfied, conclusion adds at most one subject. *)
+  Theorem dayo_limits_extension :
+    forall h_premise h_conclusion strict s,
+      dayo_satisfied h_premise h_conclusion strict ->
+      applies_to h_conclusion s ->
+      ~ applies_to h_premise s ->
+      subject_id s = subject_id strict.
+  Proof.
+    intros h_premise h_conclusion strict s Hdayo Hconc Hnprem.
+    unfold dayo_satisfied in Hdayo.
+    specialize (Hdayo s Hconc).
+    destruct Hdayo as [Hprem | Heq].
+    - contradiction.
+    - exact Heq.
+  Qed.
+
+  (** Similar_cases is an equivalence relation. *)
+  Lemma similar_cases_refl : forall s, similar_cases s s.
+  Proof. intro s. unfold similar_cases. reflexivity. Qed.
+
+  Lemma similar_cases_sym : forall s1 s2, similar_cases s1 s2 -> similar_cases s2 s1.
+  Proof. intros s1 s2. unfold similar_cases. auto. Qed.
+
+  Lemma similar_cases_trans : forall s1 s2 s3,
+    similar_cases s1 s2 -> similar_cases s2 s3 -> similar_cases s1 s3.
+  Proof.
+    intros s1 s2 s3 H12 H23.
+    unfold similar_cases in *.
+    congruence.
+  Qed.
+
   (** ================================================================== *)
   (** CONCRETE EXAMPLES AND WITNESS TESTS                                *)
   (** ================================================================== *)
+
+  (** Concrete verses and subjects for witness testing. *)
+  Definition verse_shabbat : Verse := mkVerse 1 [10; 20; 30].
+  Definition verse_yom_tov : Verse := mkVerse 2 [10; 40; 50].
+  Definition verse_chol : Verse := mkVerse 3 [60; 70].
+
+  Definition subject_shabbat : Subject := mkSubject 100 10.
+  Definition subject_yom_tov : Subject := mkSubject 101 5.
+  Definition subject_chol : Subject := mkSubject 102 1.
+
+  (** Witness: shabbat is stricter than yom_tov. *)
+  Lemma witness_shabbat_stricter_yom_tov : stricter subject_shabbat subject_yom_tov.
+  Proof. unfold stricter, subject_shabbat, subject_yom_tov. simpl. lia. Qed.
+
+  (** Witness: yom_tov is stricter than chol. *)
+  Lemma witness_yom_tov_stricter_chol : stricter subject_yom_tov subject_chol.
+  Proof. unfold stricter, subject_yom_tov, subject_chol. simpl. lia. Qed.
+
+  (** Witness: transitivity works. *)
+  Lemma witness_shabbat_stricter_chol : stricter subject_shabbat subject_chol.
+  Proof.
+    apply stricter_trans with subject_yom_tov.
+    - exact witness_shabbat_stricter_yom_tov.
+    - exact witness_yom_tov_stricter_chol.
+  Qed.
+
+  (** Witness: word 10 appears in both shabbat and yom_tov verses. *)
+  Lemma witness_shared_word : contains_word verse_shabbat 10 /\ contains_word verse_yom_tov 10.
+  Proof.
+    unfold contains_word, verse_shabbat, verse_yom_tov. simpl.
+    split; left; reflexivity.
+  Qed.
+
+  (** Counterexample attempt: chol is NOT stricter than shabbat. *)
+  Lemma counterexample_chol_not_stricter_shabbat : ~ stricter subject_chol subject_shabbat.
+  Proof. unfold stricter, subject_chol, subject_shabbat. simpl. lia. Qed.
+
+  (** Counterexample attempt: word 60 is NOT in verse_shabbat. *)
+  Lemma counterexample_word_not_in_verse : ~ contains_word verse_shabbat 60.
+  Proof.
+    unfold contains_word, verse_shabbat. simpl.
+    intros [H|[H|[H|H]]]; try discriminate; exact H.
+  Qed.
+
+  (** ================================================================== *)
+  (** WITNESS DERIVATION                                                  *)
+  (** ================================================================== *)
+
+  Definition witness_halakha : Halakha :=
+    mkHalakha 1 (fun s => subject_id s = 100) Permits DRabbanan.
+
+  Definition witness_verse : Verse := mkVerse 1 [10; 20; 30].
+
+  Lemma witness_base_derivation : base_derivation witness_halakha witness_verse.
+  Proof.
+    unfold base_derivation, witness_halakha, witness_verse, corpus_contains, torah_corpus.
+    simpl. left. reflexivity.
+  Qed.
+
+  Lemma witness_derived : derived_from witness_halakha witness_verse.
+  Proof. apply derived_base. exact witness_base_derivation. Qed.
+
+  Lemma witness_valid_halakha : valid_halakha witness_halakha.
+  Proof.
+    unfold valid_halakha, witness_halakha, halakha_universe. simpl.
+    left. reflexivity.
+  Qed.
+
+  Definition witness_tree : DerivationTree :=
+    Node DavarHaLamedMeInyano [Leaf witness_verse] witness_halakha.
+
+  Lemma witness_tree_valid_node : valid_node DavarHaLamedMeInyano [Leaf witness_verse] witness_halakha.
+  Proof. apply valid_context. exact witness_derived. Qed.
+
+  Lemma witness_tree_authority_safe : authority_safe_node DavarHaLamedMeInyano [Leaf witness_verse] witness_halakha.
+  Proof.
+    unfold authority_safe_node, min_child_authority, child_authority, witness_halakha.
+    simpl. exact I.
+  Qed.
+
+  Theorem witness_tree_well_formed : well_formed witness_tree.
+  Proof.
+    unfold witness_tree. simpl.
+    split.
+    - exact witness_tree_valid_node.
+    - split.
+      + exact witness_valid_halakha.
+      + split.
+        * exact witness_tree_authority_safe.
+        * split; exact I.
+  Qed.
+
+  Theorem witness_derivation_complete : rabbinic_derivation witness_verse witness_halakha.
+  Proof.
+    unfold rabbinic_derivation.
+    exists witness_tree.
+    split.
+    - simpl. left. reflexivity.
+    - split.
+      + simpl. reflexivity.
+      + exact witness_tree_well_formed.
+  Qed.
 
   (** Example: A simple derivation tree with one middah application. *)
   Section ExampleDerivation.
@@ -1097,4 +1497,164 @@ Module TalmudicHermeneutics.
     apply NoDup_nil.
   Qed.
 
+  (** ================================================================== *)
+  (** CHAIN COMPOSITION                                                   *)
+  (** ================================================================== *)
+
+  Fixpoint chain_base (c : DerivationChain) : Halakha :=
+    match c with
+    | ChainEnd h => h
+    | ChainStep _ _ rest => chain_base rest
+    end.
+
+  Definition chains_compatible (c1 c2 : DerivationChain) : Prop :=
+    halakha_eq_id (chain_conclusion c1) (chain_base c2).
+
+  Definition chains_compatible_b (c1 c2 : DerivationChain) : bool :=
+    Nat.eqb (halakha_id (chain_conclusion c1)) (halakha_id (chain_base c2)).
+
+  Fixpoint chain_append (c1 c2 : DerivationChain) : DerivationChain :=
+    match c2 with
+    | ChainEnd h => c1
+    | ChainStep m h rest => ChainStep m h (chain_append c1 rest)
+    end.
+
+  Definition chain_concat (c1 c2 : DerivationChain) : option DerivationChain :=
+    if chains_compatible_b c1 c2
+    then Some (chain_append c1 c2)
+    else None.
+
+  Lemma chain_append_length : forall c1 c2,
+    chain_length (chain_append c1 c2) = chain_length c1 + chain_length c2.
+  Proof.
+    intros c1 c2.
+    induction c2 as [h | m h rest IH].
+    - simpl. lia.
+    - simpl. rewrite IH. lia.
+  Qed.
+
+  Lemma chain_concat_length : forall c1 c2 c,
+    chain_concat c1 c2 = Some c ->
+    chain_length c = chain_length c1 + chain_length c2.
+  Proof.
+    intros c1 c2 c Hconcat.
+    unfold chain_concat in Hconcat.
+    destruct (chains_compatible_b c1 c2) eqn:Hcompat.
+    - inversion Hconcat. subst. apply chain_append_length.
+    - discriminate.
+  Qed.
+
+  Lemma chain_append_conclusion : forall c1 c2,
+    chain_length c2 > 0 ->
+    chain_conclusion (chain_append c1 c2) = chain_conclusion c2.
+  Proof.
+    intros c1 c2 Hlen.
+    destruct c2 as [h | m h rest].
+    - simpl in Hlen. lia.
+    - simpl. reflexivity.
+  Qed.
+
+  Lemma chain_append_base : forall c1 c2,
+    chain_base (chain_append c1 c2) = chain_base c1.
+  Proof.
+    intros c1 c2.
+    induction c2 as [h | m h rest IH].
+    - simpl. reflexivity.
+    - simpl. exact IH.
+  Qed.
+
+  Lemma chain_concat_some : forall c1 c2,
+    chains_compatible_b c1 c2 = true ->
+    exists c, chain_concat c1 c2 = Some c.
+  Proof.
+    intros c1 c2 Hcompat.
+    unfold chain_concat. rewrite Hcompat.
+    exists (chain_append c1 c2). reflexivity.
+  Qed.
+
+  Lemma chain_concat_none : forall c1 c2,
+    chains_compatible_b c1 c2 = false ->
+    chain_concat c1 c2 = None.
+  Proof.
+    intros c1 c2 Hcompat.
+    unfold chain_concat. rewrite Hcompat. reflexivity.
+  Qed.
+
+  (** ================================================================== *)
+  (** DECIDABLE VALIDATORS                                                *)
+  (** ================================================================== *)
+
+  Definition middah_eq_b (m1 m2 : Middah) : bool :=
+    if middah_eq_dec m1 m2 then true else false.
+
+  Lemma middah_eq_b_correct : forall m1 m2,
+    middah_eq_b m1 m2 = true <-> m1 = m2.
+  Proof.
+    intros m1 m2.
+    unfold middah_eq_b.
+    destruct (middah_eq_dec m1 m2); split; auto; discriminate.
+  Qed.
+
+  Definition subject_eq_b (s1 s2 : Subject) : bool :=
+    Nat.eqb (subject_id s1) (subject_id s2) &&
+    Nat.eqb (subject_severity s1) (subject_severity s2).
+
+  Lemma subject_eq_b_correct : forall s1 s2,
+    subject_eq_b s1 s2 = true <->
+    subject_id s1 = subject_id s2 /\ subject_severity s1 = subject_severity s2.
+  Proof.
+    intros s1 s2.
+    unfold subject_eq_b.
+    rewrite andb_true_iff.
+    rewrite 2 Nat.eqb_eq.
+    reflexivity.
+  Qed.
+
+  Definition stricter_b (s1 s2 : Subject) : bool :=
+    Nat.ltb (subject_severity s2) (subject_severity s1).
+
+  Lemma stricter_b_correct : forall s1 s2,
+    stricter_b s1 s2 = true <-> stricter s1 s2.
+  Proof.
+    intros s1 s2.
+    unfold stricter_b, stricter.
+    rewrite Nat.ltb_lt.
+    reflexivity.
+  Qed.
+
+  Definition contains_word_b (v : Verse) (w : Word) : bool :=
+    existsb (Nat.eqb w) (verse_words v).
+
+  Lemma contains_word_b_correct : forall v w,
+    contains_word_b v w = true <-> contains_word v w.
+  Proof.
+    intros v w.
+    unfold contains_word_b, contains_word.
+    rewrite existsb_exists.
+    split.
+    - intros [x [Hin Heq]]. rewrite Nat.eqb_eq in Heq. subst. exact Hin.
+    - intro Hin. exists w. split. exact Hin. apply Nat.eqb_refl.
+  Qed.
+
+  Definition is_general_b (v : Verse) : bool :=
+    is_general_b_new v.
+
+  Definition is_particular_b (v : Verse) : bool :=
+    is_particular_b_new v.
+
 End TalmudicHermeneutics.
+
+(** ================================================================== *)
+(** EXTRACTION                                                          *)
+(** ================================================================== *)
+
+Require Import ExtrOcamlBasic.
+Require Import ExtrOcamlNatInt.
+
+Extract Inductive TalmudicHermeneutics.Middah => "middah" ["KalVaChomer" "GezerahShavah" "BinyanAvEchad" "BinyanAvShnei" "KlalUFrat" "PratUKlal" "KlalUFratUKlal" "KlalSheTzarichLeFrat" "PratSheTzarichLeKlal" "DavarSheHayahBiKlal" "DavarYatzaLeLamed" "DavarHaLamedMeInyano" "ShneiKetuvimMakhchishim"].
+
+Extract Inductive TalmudicHermeneutics.Authority => "authority" ["DOraita" "DRabbanan"].
+
+Extract Inductive TalmudicHermeneutics.DerivationTree => "derivation_tree" ["Leaf" "Node"].
+
+Extract Inductive TalmudicHermeneutics.DerivationChain => "derivation_chain" ["ChainEnd" "ChainStep"].
