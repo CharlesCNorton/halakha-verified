@@ -48,16 +48,7 @@ Module TalmudicHermeneutics.
   Definition words_of : Verse -> list Word := verse_words.
   Definition verses_of : Parshah -> list Verse := parshah_verses.
 
-  (** Halakhic propositions: the objects derived from scripture. *)
-  Record Halakha := mkHalakha {
-    halakha_id : nat;
-    halakha_source : nat
-  }.
-
-  Definition halakha_eq_dec : forall h1 h2 : Halakha, {h1 = h2} + {h1 <> h2}.
-  Proof. decide equality; apply Nat.eq_dec. Defined.
-
-  (** Severity ordering for kal va-chomer. *)
+  (** Subjects: entities to which halakhot apply, ordered by severity. *)
   Record Subject := mkSubject {
     subject_id : nat;
     subject_severity : nat
@@ -84,8 +75,26 @@ Module TalmudicHermeneutics.
   Definition stricter_irrefl : forall a, ~ stricter a a :=
     strict_irrefl stricter stricter_order.
 
+  (** Authority levels: d'oraita (Torah) vs d'rabbanan (Rabbinic). *)
+  Inductive Authority : Type :=
+    | DOraita : Authority
+    | DRabbanan : Authority.
+
+  Definition authority_eq_dec : forall a1 a2 : Authority, {a1 = a2} + {a1 <> a2}.
+  Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+  (** Halakhic propositions: carry identity, scope, and authority. *)
+  Record Halakha := mkHalakha {
+    halakha_id : nat;
+    halakha_scope : Subject -> Prop;
+    halakha_authority : Authority
+  }.
+
+  Definition halakha_eq_id (h1 h2 : Halakha) : Prop :=
+    halakha_id h1 = halakha_id h2.
+
   Definition applies_to (h : Halakha) (s : Subject) : Prop :=
-    halakha_source h = subject_id s.
+    halakha_scope h s.
 
   Definition contains_word (v : Verse) (w : Word) : Prop :=
     In w (verse_words v).
@@ -167,9 +176,12 @@ Module TalmudicHermeneutics.
     split; assumption.
   Qed.
 
-  (** derived_from defined inductively to capture all derivation methods. *)
+  (** Explicit verses from which halakhot are directly derived (peshat). *)
+  Parameter base_derivation : Halakha -> Verse -> Prop.
+
   Inductive derived_from : Halakha -> Verse -> Prop :=
-    | derived_direct : forall h v,
+    | derived_base : forall h v,
+        base_derivation h v ->
         derived_from h v
     | derived_gezerah_shavah : forall h v1 v2 w,
         derived_from h v1 ->
@@ -266,44 +278,51 @@ Module TalmudicHermeneutics.
     length (verse_words v) <= 3.
   Definition particularizes (prat klal : Verse) : Prop :=
     incl (verse_words prat) (verse_words klal).
-  Definition scope (h : Halakha) : list Subject :=
-    [mkSubject (halakha_source h) 0].
 
-  Definition valid_klal_u_frat (klal prat : Verse) (h : Halakha) (restricted_scope : list Subject) : Prop :=
+  (** Klal u-frat: general followed by particular restricts to particular's scope. *)
+  Definition valid_klal_u_frat (klal prat : Verse) (h_premise h_conclusion : Halakha) (restriction : Subject -> Prop) : Prop :=
     is_general klal /\
     is_particular prat /\
-    particularizes prat klal ->
-    scope h = restricted_scope.
+    particularizes prat klal /\
+    halakha_eq_id h_premise h_conclusion /\
+    (forall s, halakha_scope h_conclusion s <-> (halakha_scope h_premise s /\ restriction s)).
 
-  (** Prat u-klal: particular followed by general means the general applies broadly. *)
-  Definition valid_prat_u_klal (prat klal : Verse) (h : Halakha) : Prop :=
+  (** Prat u-klal: particular followed by general expands to general's scope. *)
+  Definition valid_prat_u_klal (prat klal : Verse) (h_premise h_conclusion : Halakha) : Prop :=
     is_particular prat /\
     is_general klal /\
-    particularizes prat klal ->
-    forall s : Subject, applies_to h s.
+    particularizes prat klal /\
+    halakha_eq_id h_premise h_conclusion /\
+    (forall s, halakha_scope h_premise s -> halakha_scope h_conclusion s).
 
-  (** Klal u-frat u-klal: general-particular-general pattern. *)
-  Definition valid_klal_u_frat_u_klal (klal1 prat klal2 : Verse) (h : Halakha) : Prop :=
+  (** Klal u-frat u-klal: scope is similar to the particular, not identical. *)
+  Definition valid_klal_u_frat_u_klal (klal1 prat klal2 : Verse) (h_premise h_conclusion : Halakha) (similar : Subject -> Prop) : Prop :=
     is_general klal1 /\
     is_particular prat /\
     is_general klal2 /\
-    particularizes prat klal1 ->
-    True.
+    particularizes prat klal1 /\
+    halakha_eq_id h_premise h_conclusion /\
+    (forall s, halakha_scope h_conclusion s <-> (halakha_scope h_premise s /\ similar s)).
 
-  (** Davar she-hayah bi-klal: exception from a general rule. *)
+  (** Davar she-hayah bi-klal: exception removes subjects from general rule. *)
   Definition exception_from (exc gen : Halakha) : Prop :=
-    halakha_source exc > halakha_source gen.
+    halakha_id exc <> halakha_id gen /\
+    exists s, halakha_scope gen s /\ halakha_scope exc s.
 
-  Definition valid_davar_she_hayah (general_rule exception : Halakha) : Prop :=
-    exception_from exception general_rule ->
-    forall s, In s (scope exception) -> ~ applies_to general_rule s.
+  Definition valid_davar_she_hayah (general_rule exception result : Halakha) : Prop :=
+    exception_from exception general_rule /\
+    halakha_eq_id general_rule result /\
+    (forall s, halakha_scope result s <-> (halakha_scope general_rule s /\ ~ halakha_scope exception s)).
 
   (** Shnei ketuvim makhchishim: two contradictory verses resolved by a third. *)
 
-  (** Two halakhot conflict if they cannot both apply to the same subject. *)
-  Definition halakha_conflicts (h1 h2 : Halakha) : Prop :=
-    halakha_id h1 <> halakha_id h2.
+  (** Semantic incompatibility: halakhot conflict on a subject. *)
+  Parameter incompatible : Halakha -> Halakha -> Subject -> Prop.
 
+  Definition halakha_conflicts (h1 h2 : Halakha) : Prop :=
+    exists s, halakha_scope h1 s /\ halakha_scope h2 s /\ incompatible h1 h2 s.
+
+  (** Resolution synthesizes a consistent halakha from conflicting ones. *)
   Record Contradiction : Type := mkContradiction {
     contra_v1 : Verse;
     contra_v2 : Verse;
@@ -315,7 +334,7 @@ Module TalmudicHermeneutics.
     contra_derived_2 : derived_from contra_h2 contra_v2;
     contra_derived_3 : derived_from contra_h3 contra_v3;
     contra_conflict : halakha_conflicts contra_h1 contra_h2;
-    contra_resolves : ~ halakha_conflicts contra_h3 contra_h1 /\ ~ halakha_conflicts contra_h3 contra_h2
+    contra_h3_consistent : ~ halakha_conflicts contra_h3 contra_h1 /\ ~ halakha_conflicts contra_h3 contra_h2
   }.
 
   Definition contradicts (v1 v2 : Verse) : Prop :=
@@ -327,16 +346,8 @@ Module TalmudicHermeneutics.
 
   Definition valid_shnei_ketuvim (v1 v2 v3 : Verse) (h : Halakha) : Prop :=
     contradicts v1 v2 /\
-    resolves v3 v1 v2 ->
+    resolves v3 v1 v2 /\
     derived_from h v3.
-
-  (** Authority levels: d'oraita (Torah) vs d'rabbanan (Rabbinic). *)
-  Inductive Authority : Type :=
-    | DOraita : Authority
-    | DRabbanan : Authority.
-
-  Definition authority_eq_dec : forall a1 a2 : Authority, {a1 = a2} + {a1 <> a2}.
-  Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
 
   Definition authority_ge (a1 a2 : Authority) : Prop :=
     match a1, a2 with
@@ -371,9 +382,6 @@ Module TalmudicHermeneutics.
   Lemma authority_ge_antisym : forall a b,
     authority_ge a b -> authority_ge b a -> a = b.
   Proof. intros [] [] H1 H2; auto; simpl in *; contradiction. Qed.
-
-  Definition halakha_authority (h : Halakha) : Authority :=
-    if halakha_source h <? 1000 then DOraita else DRabbanan.
 
   Definition derivation_authority (d : Derivation) : Authority :=
     halakha_authority (conclusion d).
@@ -410,85 +418,132 @@ Module TalmudicHermeneutics.
     | Node _ _ h => Some h
     end.
 
-  (** Well-formedness: a derivation tree is well-formed if it uses valid middot. *)
-  (** Each constructor enforces structural constraints appropriate to the middah. *)
+  (** Well-formedness: a derivation tree is well-formed if it uses valid middot.
+      Each constructor requires child conclusions to semantically justify the parent. *)
 
   Definition has_conclusion (t : DerivationTree) (h : Halakha) : Prop :=
     tree_conclusion t = Some h.
-
-  Definition children_derive (children : list DerivationTree) (h : Halakha) : Prop :=
-    exists c, In c children /\ has_conclusion c h.
 
   Inductive valid_node : Middah -> list DerivationTree -> Halakha -> Prop :=
     | valid_context : forall v h,
         derived_from h v ->
         valid_node DavarHaLamedMeInyano [Leaf v] h
-    | valid_kal_va_chomer_node : forall t_lenient t_strict h lenient strict,
-        has_conclusion t_lenient h ->
+
+    | valid_kal_va_chomer_node : forall t_lenient t_strict h_in h_out lenient strict v_strict,
+        has_conclusion t_lenient h_in ->
+        tree_verses t_strict = [v_strict] ->
+        contains_word v_strict (subject_id strict) ->
         stricter strict lenient ->
-        applies_to h lenient ->
-        valid_node KalVaChomer [t_lenient; t_strict] h
+        applies_to h_in lenient ->
+        halakha_eq_id h_in h_out ->
+        (halakha_authority h_in = DRabbanan -> halakha_authority h_out = DRabbanan) ->
+        (forall s, halakha_scope h_out s <-> (halakha_scope h_in s \/ subject_id s = subject_id strict)) ->
+        valid_node KalVaChomer [t_lenient; t_strict] h_out
+
     | valid_gezerah_shavah_node : forall t1 t2 h v1 v2 w,
+        has_conclusion t1 h ->
         tree_verses t1 = [v1] ->
         tree_verses t2 = [v2] ->
         valid_gezerah_shavah v1 v2 w h ->
         valid_node GezerahShavah [t1; t2] h
-    | valid_binyan_av_echad_node : forall t h,
-        children_derive [t] h ->
-        valid_node BinyanAvEchad [t] h
-    | valid_binyan_av_shnei_node : forall t1 t2 h,
-        children_derive [t1; t2] h ->
-        valid_node BinyanAvShnei [t1; t2] h
-    | valid_klal_u_frat_node : forall t_klal t_prat h v_klal v_prat,
-        tree_verses t_klal = [v_klal] ->
-        tree_verses t_prat = [v_prat] ->
-        is_general v_klal ->
-        is_particular v_prat ->
-        particularizes v_prat v_klal ->
-        valid_node KlalUFrat [t_klal; t_prat] h
-    | valid_prat_u_klal_node : forall t_prat t_klal h v_prat v_klal,
-        tree_verses t_prat = [v_prat] ->
-        tree_verses t_klal = [v_klal] ->
-        is_particular v_prat ->
-        is_general v_klal ->
-        particularizes v_prat v_klal ->
-        valid_node PratUKlal [t_prat; t_klal] h
-    | valid_klal_u_frat_u_klal_node : forall t1 t2 t3 h v1 v2 v3,
-        tree_verses t1 = [v1] ->
-        tree_verses t2 = [v2] ->
-        tree_verses t3 = [v3] ->
-        is_general v1 ->
-        is_particular v2 ->
-        is_general v3 ->
-        valid_node KlalUFratUKlal [t1; t2; t3] h
-    | valid_klal_she_tzarich_node : forall t_klal t_prat h v_klal v_prat,
-        tree_verses t_klal = [v_klal] ->
-        tree_verses t_prat = [v_prat] ->
-        is_general v_klal ->
-        is_particular v_prat ->
-        valid_node KlalSheTzarichLeFrat [t_klal; t_prat] h
-    | valid_prat_she_tzarich_node : forall t_prat t_klal h v_prat v_klal,
-        tree_verses t_prat = [v_prat] ->
-        tree_verses t_klal = [v_klal] ->
-        is_particular v_prat ->
-        is_general v_klal ->
-        valid_node PratSheTzarichLeKlal [t_prat; t_klal] h
-    | valid_davar_she_hayah_node : forall t_general t_exception h h_general,
-        has_conclusion t_general h_general ->
-        exception_from h h_general ->
-        valid_node DavarSheHayahBiKlal [t_general; t_exception] h
-    | valid_davar_yatza_node : forall t h,
-        children_derive [t] h ->
-        valid_node DavarYatzaLeLamed [t] h
-    | valid_shnei_ketuvim_node : forall t1 t2 t3 h v1 v2 v3,
-        tree_verses t1 = [v1] ->
-        tree_verses t2 = [v2] ->
-        tree_verses t3 = [v3] ->
-        contradicts v1 v2 ->
-        resolves v3 v1 v2 ->
-        valid_node ShneiKetuvimMakhchishim [t1; t2; t3] h.
 
-  (** Authority-safe derivation helpers defined early for use in well_formed. *)
+    | valid_binyan_av_echad_node : forall t h_in h_out s_paradigm s_target,
+        has_conclusion t h_in ->
+        applies_to h_in s_paradigm ->
+        similar_cases s_paradigm s_target ->
+        halakha_eq_id h_in h_out ->
+        (forall s, halakha_scope h_out s <-> (halakha_scope h_in s \/ subject_id s = subject_id s_target)) ->
+        valid_node BinyanAvEchad [t] h_out
+
+    | valid_binyan_av_shnei_node : forall t1 t2 h_in h_out s1 s2 s_target,
+        has_conclusion t1 h_in ->
+        has_conclusion t2 h_in ->
+        applies_to h_in s1 ->
+        applies_to h_in s2 ->
+        similar_cases s1 s_target ->
+        similar_cases s2 s_target ->
+        halakha_eq_id h_in h_out ->
+        (forall s, halakha_scope h_out s <-> (halakha_scope h_in s \/ subject_id s = subject_id s_target)) ->
+        valid_node BinyanAvShnei [t1; t2] h_out
+
+    | valid_klal_u_frat_node : forall t_klal t_prat h_in h_out v_klal v_prat restriction,
+        has_conclusion t_klal h_in ->
+        tree_verses t_klal = [v_klal] ->
+        tree_verses t_prat = [v_prat] ->
+        valid_klal_u_frat v_klal v_prat h_in h_out restriction ->
+        valid_node KlalUFrat [t_klal; t_prat] h_out
+
+    | valid_prat_u_klal_node : forall t_prat t_klal h_in h_out v_prat v_klal,
+        has_conclusion t_prat h_in ->
+        tree_verses t_prat = [v_prat] ->
+        tree_verses t_klal = [v_klal] ->
+        valid_prat_u_klal v_prat v_klal h_in h_out ->
+        valid_node PratUKlal [t_prat; t_klal] h_out
+
+    | valid_klal_u_frat_u_klal_node : forall t1 t2 t3 h_in h_out v1 v2 v3 similar,
+        has_conclusion t1 h_in ->
+        tree_verses t1 = [v1] ->
+        tree_verses t2 = [v2] ->
+        tree_verses t3 = [v3] ->
+        valid_klal_u_frat_u_klal v1 v2 v3 h_in h_out similar ->
+        valid_node KlalUFratUKlal [t1; t2; t3] h_out
+
+    | valid_klal_she_tzarich_node : forall t_klal t_prat h_in h_out v_klal v_prat,
+        has_conclusion t_klal h_in ->
+        tree_verses t_klal = [v_klal] ->
+        tree_verses t_prat = [v_prat] ->
+        is_general v_klal ->
+        is_particular v_prat ->
+        halakha_eq_id h_in h_out ->
+        ~ derived_from h_in v_klal ->
+        derived_from h_out v_klal ->
+        derived_from h_out v_prat ->
+        (forall s, halakha_scope h_out s <-> halakha_scope h_in s) ->
+        valid_node KlalSheTzarichLeFrat [t_klal; t_prat] h_out
+
+    | valid_prat_she_tzarich_node : forall t_prat t_klal h_in h_out v_prat v_klal,
+        has_conclusion t_prat h_in ->
+        tree_verses t_prat = [v_prat] ->
+        tree_verses t_klal = [v_klal] ->
+        is_particular v_prat ->
+        is_general v_klal ->
+        halakha_eq_id h_in h_out ->
+        ~ derived_from h_in v_prat ->
+        derived_from h_out v_prat ->
+        derived_from h_out v_klal ->
+        (forall s, halakha_scope h_out s <-> halakha_scope h_in s) ->
+        valid_node PratSheTzarichLeKlal [t_prat; t_klal] h_out
+
+    | valid_davar_she_hayah_node : forall t_general t_exception h_general h_exception h_out,
+        has_conclusion t_general h_general ->
+        has_conclusion t_exception h_exception ->
+        valid_davar_she_hayah h_general h_exception h_out ->
+        valid_node DavarSheHayahBiKlal [t_general; t_exception] h_out
+
+    | valid_davar_yatza_node : forall t h_general h_teaching v,
+        has_conclusion t h_general ->
+        tree_verses t = [v] ->
+        derived_from h_teaching v ->
+        halakha_eq_id h_general h_teaching ->
+        (exists s, halakha_scope h_general s /\ ~ halakha_scope h_teaching s) ->
+        valid_node DavarYatzaLeLamed [t] h_teaching
+
+    | valid_shnei_ketuvim_node : forall t1 t2 t3 h1 h2 h_out v1 v2 v3,
+        has_conclusion t1 h1 ->
+        has_conclusion t2 h2 ->
+        tree_verses t1 = [v1] ->
+        tree_verses t2 = [v2] ->
+        tree_verses t3 = [v3] ->
+        halakha_conflicts h1 h2 ->
+        derived_from h_out v3 ->
+        ~ halakha_conflicts h_out h1 ->
+        ~ halakha_conflicts h_out h2 ->
+        valid_node ShneiKetuvimMakhchishim [t1; t2; t3] h_out.
+
+  (** Universe of valid halakhot: restricts what halakhot can appear in derivations. *)
+  Parameter valid_halakha : Halakha -> Prop.
+
+  (** Authority-safe derivation helpers. *)
   Definition child_authority (t : DerivationTree) : Authority :=
     match tree_conclusion t with
     | Some h' => halakha_authority h'
@@ -503,18 +558,18 @@ Module TalmudicHermeneutics.
   Definition authority_safe_node (m : Middah) (children : list DerivationTree) (h : Halakha) : Prop :=
     authority_ge (halakha_authority h) (max_child_authority children).
 
-  Definition kal_va_chomer_safe (h : Halakha) : Prop :=
-    halakha_authority h = DRabbanan ->
-    forall strict : Subject, ~ (exists h', applies_to h' strict /\ halakha_authority h' = DOraita).
+  Definition kal_va_chomer_safe (h_in h_out : Halakha) : Prop :=
+    halakha_authority h_in = DRabbanan ->
+    halakha_authority h_out = DRabbanan.
 
-  (** Unified well-formedness: structural validity AND authority preservation. *)
+  (** Unified well-formedness: structural validity, authority, and universe membership. *)
   Fixpoint well_formed (t : DerivationTree) : Prop :=
     match t with
     | Leaf v => True
     | Node m children h =>
         valid_node m children h /\
+        valid_halakha h /\
         authority_safe_node m children h /\
-        (m = KalVaChomer -> kal_va_chomer_safe h) /\
         (fix all_wf (l : list DerivationTree) : Prop :=
           match l with
           | [] => True
@@ -637,9 +692,10 @@ Module TalmudicHermeneutics.
   Theorem rabbinic_extends_karaite :
     forall v h,
       karaite_derivation v h ->
+      valid_halakha h ->
       rabbinic_derivation v h.
   Proof.
-    intros v h Hd.
+    intros v h Hd Hvalid.
     unfold rabbinic_derivation, karaite_derivation in *.
     exists (Node DavarHaLamedMeInyano [Leaf v] h).
     split.
@@ -649,42 +705,39 @@ Module TalmudicHermeneutics.
       + simpl. split.
         * apply valid_context. exact Hd.
         * split.
-          { unfold authority_safe_node, max_child_authority. simpl.
-            destruct (halakha_authority h); simpl; exact I. }
+          { exact Hvalid. }
           { split.
-            - intro Heq. discriminate Heq.
+            - unfold authority_safe_node, max_child_authority. simpl.
+              destruct (halakha_authority h); simpl; exact I.
             - split; exact I. }
   Qed.
 
   (** Klal u-frat restricts scope. *)
   Theorem klal_u_frat_restricts :
-    forall klal prat h full_scope restricted_scope,
-      is_general klal ->
-      is_particular prat ->
-      scope h = full_scope ->
-      valid_klal_u_frat klal prat h restricted_scope ->
-      particularizes prat klal ->
-      scope h = restricted_scope.
+    forall klal prat h_in h_out restriction s,
+      valid_klal_u_frat klal prat h_in h_out restriction ->
+      halakha_scope h_out s ->
+      halakha_scope h_in s /\ restriction s.
   Proof.
-    intros klal prat h full_scope restricted_scope Hg Hp Hfull Hvalid Hpart.
+    intros klal prat h_in h_out restriction s Hvalid Hout.
     unfold valid_klal_u_frat in Hvalid.
-    apply Hvalid.
-    auto.
+    destruct Hvalid as [_ [_ [_ [_ Hscope]]]].
+    apply Hscope.
+    exact Hout.
   Qed.
 
-  (** Prat u-klal expands scope universally. *)
+  (** Prat u-klal expands scope. *)
   Theorem prat_u_klal_expands :
-    forall prat klal h,
-      valid_prat_u_klal prat klal h ->
-      is_particular prat ->
-      is_general klal ->
-      particularizes prat klal ->
-      forall s, applies_to h s.
+    forall prat klal h_in h_out s,
+      valid_prat_u_klal prat klal h_in h_out ->
+      halakha_scope h_in s ->
+      halakha_scope h_out s.
   Proof.
-    intros prat klal h Hvalid Hp Hg Hpart s.
+    intros prat klal h_in h_out s Hvalid Hin.
     unfold valid_prat_u_klal in Hvalid.
-    apply Hvalid.
-    auto.
+    destruct Hvalid as [_ [_ [_ [_ Hexpand]]]].
+    apply Hexpand.
+    exact Hin.
   Qed.
 
   (** Contradiction requires resolution - now a theorem via structural bundling. *)
@@ -720,7 +773,7 @@ Module TalmudicHermeneutics.
     apply Nat.lt_succ_diag_r.
   Qed.
 
-  (** Middah application preserves authority floor - now a theorem. *)
+  (** Middah application preserves authority floor. *)
   Theorem middah_authority_floor :
     forall m t h,
       well_formed (Node m [t] h) ->
@@ -728,7 +781,7 @@ Module TalmudicHermeneutics.
   Proof.
     intros m t h Hawf.
     simpl in Hawf.
-    destruct Hawf as [_ [Hsafe _]].
+    destruct Hawf as [_ [_ [Hsafe _]]].
     unfold authority_safe_node, max_child_authority, child_authority in *.
     simpl in Hsafe.
     destruct (tree_conclusion t) as [h'|].
@@ -737,19 +790,25 @@ Module TalmudicHermeneutics.
     - destruct (halakha_authority h); simpl; exact I.
   Qed.
 
-  (** Kal va-chomer cannot create d'Oraita from d'Rabbanan - now a theorem. *)
+  (** Kal va-chomer cannot create d'Oraita from d'Rabbanan. *)
   Theorem kal_va_chomer_authority_bound :
-    forall children h,
-      well_formed (Node KalVaChomer children h) ->
-      halakha_authority h = DRabbanan ->
-      forall strict, ~ (exists h', applies_to h' strict /\ halakha_authority h' = DOraita).
+    forall t_lenient t_strict h_out,
+      valid_node KalVaChomer [t_lenient; t_strict] h_out ->
+      forall h_in, has_conclusion t_lenient h_in ->
+      halakha_authority h_in = DRabbanan ->
+      halakha_authority h_out = DRabbanan.
   Proof.
-    intros children h Hawf Hrabb strict.
-    simpl in Hawf.
-    destruct Hawf as [_ [_ [Hkvc _]]].
-    apply Hkvc.
-    - reflexivity.
-    - exact Hrabb.
+    intros t_lenient t_strict h_out Hvalid h_in Hconc Hrabb.
+    inversion Hvalid; subst.
+    unfold has_conclusion in *.
+    match goal with
+    | [ H : tree_conclusion t_lenient = Some ?x |- _ ] => rewrite H in Hconc
+    end.
+    inversion Hconc; subst.
+    match goal with
+    | [ H : halakha_authority _ = DRabbanan -> halakha_authority h_out = DRabbanan |- _ ] => apply H
+    end.
+    exact Hrabb.
   Qed.
 
   (** Gezerah shavah requires mesorah - now a theorem via structural bundling. *)
