@@ -48,10 +48,12 @@ Module TalmudicHermeneutics.
   Definition words_of : Verse -> list Word := verse_words.
   Definition verses_of : Parshah -> list Verse := parshah_verses.
 
-  (** Subjects: entities to which halakhot apply, ordered by severity. *)
+  (** Subjects: entities to which halakhot apply, ordered by severity.
+      category represents the type of case (e.g., property, personal, ritual). *)
   Record Subject := mkSubject {
     subject_id : nat;
-    subject_severity : nat
+    subject_severity : nat;
+    subject_category : nat
   }.
 
   Record StrictOrder {A : Type} (R : A -> A -> Prop) : Prop := mkStrictOrder {
@@ -101,26 +103,127 @@ Module TalmudicHermeneutics.
     | _, _ => false
     end.
 
-  (** Halakhic propositions: carry identity, scope, modality, and authority. *)
-  Record Halakha := mkHalakha {
-    halakha_id : nat;
-    halakha_scope : Subject -> Prop;
-    halakha_modality : Modality;
-    halakha_authority : Authority
+  (** Halakhic propositions: ID is identity; content lives in canonical environment. *)
+  Definition Halakha := nat.
+
+  Record HalakhaData := mkHalakhaData {
+    hd_scope : Subject -> Prop;
+    hd_modality : Modality;
+    hd_authority : Authority
   }.
 
-  Definition halakha_eq_id (h1 h2 : Halakha) : Prop :=
-    halakha_id h1 = halakha_id h2.
+  Definition HalakhaEnv := Halakha -> option HalakhaData.
+
+  (** Canonical global environment - the single source of truth.
+      Same ID structurally guarantees same content. *)
+  Definition global_env : HalakhaEnv := fun h =>
+    match h with
+    | 1 => Some (mkHalakhaData (fun s => subject_id s = 100) Permits DRabbanan)
+    | 2 => Some (mkHalakhaData (fun s => subject_id s = 101) Obligates DOraita)
+    | 3 => Some (mkHalakhaData (fun s => subject_id s = 100 \/ subject_id s = 101) Forbids DOraita)
+    | 4 => Some (mkHalakhaData (fun s => subject_id s = 102) Permits DRabbanan)
+    | 5 => Some (mkHalakhaData (fun s => subject_id s <= 105) Obligates DOraita)
+    | 6 => Some (mkHalakhaData (fun s => subject_id s = 100) Forbids DRabbanan)
+    | 7 => Some (mkHalakhaData (fun s => subject_id s = 101) Permits DOraita)
+    | 8 => Some (mkHalakhaData (fun s => subject_id s = 102) Obligates DRabbanan)
+    | 9 => Some (mkHalakhaData (fun s => subject_id s = 100) Obligates DOraita)
+    | 10 => Some (mkHalakhaData (fun s => subject_id s = 101) Forbids DRabbanan)
+    | _ => None
+    end.
+
+  (** Accessor functions use global_env. *)
+  Definition halakha_scope (h : Halakha) : Subject -> Prop :=
+    match global_env h with
+    | Some data => hd_scope data
+    | None => fun _ => False
+    end.
+
+  Definition halakha_modality (h : Halakha) : Modality :=
+    match global_env h with
+    | Some data => hd_modality data
+    | None => Forbids
+    end.
+
+  Definition halakha_authority (h : Halakha) : Authority :=
+    match global_env h with
+    | Some data => hd_authority data
+    | None => DRabbanan
+    end.
+
+  (** Same ID now structurally means same law. *)
+  Definition halakha_eq_id (h1 h2 : Halakha) : Prop := h1 = h2.
 
   Definition applies_to (h : Halakha) (s : Subject) : Prop :=
     halakha_scope h s.
 
+  Definition halakha_defined (h : Halakha) : Prop :=
+    exists data, global_env h = Some data.
+
   Definition contains_word (v : Verse) (w : Word) : Prop :=
     In w (verse_words v).
 
-  (** A word is superfluous (mufneh) in a verse if removing it doesn't change
-      the essential meaning. We model this as: the word appears but is not
-      the first word (subject) or second word (verb) of the verse. *)
+  (** Semantic word constants for klal/prat and superfluity analysis. *)
+  Definition word_kol : Word := 100.
+  Definition word_ish : Word := 101.
+  Definition word_davar : Word := 102.
+
+  Definition quantifier_words : list Word := [word_kol; 103; 104].
+  Definition specific_words : list Word := [word_ish; word_davar; 105; 106].
+
+  (** Semantic word categories for determining superfluity. *)
+  Definition action_words : list Word := [200; 201; 202; 203].
+  Definition subject_words : list Word := [210; 211; 212; 213].
+  Definition object_words : list Word := [220; 221; 222; 223].
+
+  Definition is_semantic_core_word (w : Word) : bool :=
+    existsb (Nat.eqb w) quantifier_words ||
+    existsb (Nat.eqb w) specific_words ||
+    existsb (Nat.eqb w) action_words ||
+    existsb (Nat.eqb w) subject_words ||
+    existsb (Nat.eqb w) object_words.
+
+  (** Core words of a verse: those carrying semantic weight. *)
+  Definition verse_core_words (v : Verse) : list Word :=
+    filter is_semantic_core_word (verse_words v).
+
+  (** A word is superfluous (mufneh) if it appears in the verse but is NOT
+      a core semantic word - i.e., removing it doesn't change halakhic content. *)
+  Definition word_superfluous (v : Verse) (w : Word) : Prop :=
+    In w (verse_words v) /\ ~ In w (verse_core_words v).
+
+  Definition word_superfluous_b (v : Verse) (w : Word) : bool :=
+    existsb (Nat.eqb w) (verse_words v) &&
+    negb (existsb (Nat.eqb w) (verse_core_words v)).
+
+  Lemma word_superfluous_b_correct : forall v w,
+    word_superfluous_b v w = true <-> word_superfluous v w.
+  Proof.
+    intros v w.
+    unfold word_superfluous_b, word_superfluous.
+    rewrite andb_true_iff, negb_true_iff.
+    split.
+    - intros [Hin Hncore].
+      rewrite existsb_exists in Hin.
+      destruct Hin as [x [Hxin Heq]].
+      rewrite Nat.eqb_eq in Heq. subst.
+      split.
+      + exact Hxin.
+      + intro Hcore.
+        assert (existsb (Nat.eqb x) (verse_core_words v) = true) as Hex.
+        { rewrite existsb_exists. exists x. split. exact Hcore. apply Nat.eqb_refl. }
+        rewrite Hex in Hncore. discriminate.
+    - intros [Hin Hncore].
+      split.
+      + rewrite existsb_exists. exists w. split. exact Hin. apply Nat.eqb_refl.
+      + destruct (existsb (Nat.eqb w) (verse_core_words v)) eqn:E.
+        * rewrite existsb_exists in E.
+          destruct E as [x [Hxin Heq]].
+          rewrite Nat.eqb_eq in Heq. subst.
+          contradiction.
+        * reflexivity.
+  Qed.
+
+  (** Position-based helper (kept for compatibility). *)
   Definition word_position (v : Verse) (w : Word) : option nat :=
     let fix find_pos (l : list Word) (n : nat) :=
       match l with
@@ -128,28 +231,6 @@ Module TalmudicHermeneutics.
       | x :: xs => if Nat.eq_dec x w then Some n else find_pos xs (S n)
       end
     in find_pos (verse_words v) 0.
-
-  Definition word_superfluous (v : Verse) (w : Word) : Prop :=
-    match word_position v w with
-    | Some pos => pos >= 2
-    | None => False
-    end.
-
-  Definition word_superfluous_b (v : Verse) (w : Word) : bool :=
-    match word_position v w with
-    | Some pos => 2 <=? pos
-    | None => false
-    end.
-
-  Lemma word_superfluous_b_correct : forall v w,
-    word_superfluous_b v w = true <-> word_superfluous v w.
-  Proof.
-    intros v w.
-    unfold word_superfluous_b, word_superfluous.
-    destruct (word_position v w) as [pos|].
-    - rewrite Nat.leb_le. reflexivity.
-    - split; intro H; inversion H.
-  Qed.
 
   (** Mesorah certificate: proof-carrying evidence that a word is authorized
       for gezerah shavah between two specific verses. The word must be
@@ -227,10 +308,10 @@ Module TalmudicHermeneutics.
     [ (1, 1); (2, 2); (3, 1); (4, 3) ].
 
   Definition base_derivation (h : Halakha) (v : Verse) : Prop :=
-    corpus_contains torah_corpus (halakha_id h) (verse_id v).
+    corpus_contains torah_corpus h (verse_id v).
 
   Definition base_derivation_b (h : Halakha) (v : Verse) : bool :=
-    corpus_contains_b torah_corpus (halakha_id h) (verse_id v).
+    corpus_contains_b torah_corpus h (verse_id v).
 
   Lemma base_derivation_b_correct : forall h v,
     base_derivation_b h v = true <-> base_derivation h v.
@@ -350,8 +431,11 @@ Module TalmudicHermeneutics.
       gs_v1 gsd = v1 /\ gs_v2 gsd = v2 /\ gs_word gsd = shared /\ gs_halakha gsd = h.
 
   (** Binyan av: paradigm case establishes rule for similar cases. *)
+  (** Similar cases share both severity level and category - the shared
+      property that justifies binyan av inference. *)
   Definition similar_cases (s1 s2 : Subject) : Prop :=
-    subject_severity s1 = subject_severity s2.
+    subject_severity s1 = subject_severity s2 /\
+    subject_category s1 = subject_category s2.
 
   Definition valid_binyan_av (paradigm : Verse) (h : Halakha) (s1 s2 : Subject) : Prop :=
     derived_from h paradigm /\
@@ -360,13 +444,6 @@ Module TalmudicHermeneutics.
     applies_to h s2.
 
   (** Klal u-frat: general followed by particular means only the particular. *)
-
-  Definition word_kol : Word := 100.
-  Definition word_ish : Word := 101.
-  Definition word_davar : Word := 102.
-
-  Definition quantifier_words : list Word := [word_kol; 103; 104].
-  Definition specific_words : list Word := [word_ish; word_davar; 105; 106].
 
   Definition has_quantifier (v : Verse) : Prop :=
     exists w, In w (verse_words v) /\ In w quantifier_words.
@@ -392,8 +469,16 @@ Module TalmudicHermeneutics.
   Definition is_particular_b_new (v : Verse) : bool :=
     has_specific_b v && negb (has_quantifier_b v).
 
+  (** Particularizes: prat follows klal textually (adjacent verse IDs)
+      and shares thematic words (non-empty intersection). *)
+  Definition verses_adjacent (v1 v2 : Verse) : Prop :=
+    verse_id v2 = S (verse_id v1).
+
+  Definition words_overlap (v1 v2 : Verse) : Prop :=
+    exists w, In w (verse_words v1) /\ In w (verse_words v2).
+
   Definition particularizes (prat klal : Verse) : Prop :=
-    incl (verse_words prat) (verse_words klal).
+    verses_adjacent klal prat /\ words_overlap klal prat.
 
   (** Klal u-frat: general followed by particular restricts to particular's scope. *)
   Definition valid_klal_u_frat (klal prat : Verse) (h_premise h_conclusion : Halakha) (restriction : Subject -> Prop) : Prop :=
@@ -422,7 +507,7 @@ Module TalmudicHermeneutics.
 
   (** Davar she-hayah bi-klal: exception removes subjects from general rule. *)
   Definition exception_from (exc gen : Halakha) : Prop :=
-    halakha_id exc <> halakha_id gen /\
+    exc <> gen /\
     exists s, halakha_scope gen s /\ halakha_scope exc s.
 
   Definition valid_davar_she_hayah (general_rule exception result : Halakha) : Prop :=
@@ -559,6 +644,22 @@ Module TalmudicHermeneutics.
   Definition has_conclusion (t : DerivationTree) (h : Halakha) : Prop :=
     tree_conclusion t = Some h.
 
+  (** A citation tree is a leaf - provides verse without derived conclusion. *)
+  Definition is_citation (t : DerivationTree) : Prop :=
+    exists v, t = Leaf v.
+
+  Lemma citation_no_conclusion : forall t,
+    is_citation t -> tree_conclusion t = None.
+  Proof.
+    intros t [v Hv]. subst. reflexivity.
+  Qed.
+
+  Lemma citation_single_verse : forall t v,
+    t = Leaf v -> tree_verses t = [v].
+  Proof.
+    intros t v Hv. subst. reflexivity.
+  Qed.
+
   Inductive valid_node : Middah -> list DerivationTree -> Halakha -> Prop :=
     | valid_context : forall v h,
         derived_from h v ->
@@ -566,6 +667,7 @@ Module TalmudicHermeneutics.
 
     | valid_kal_va_chomer_node : forall t_lenient t_strict h_in h_out lenient strict v_strict,
         has_conclusion t_lenient h_in ->
+        is_citation t_strict ->
         tree_verses t_strict = [v_strict] ->
         contains_word v_strict (subject_id strict) ->
         stricter strict lenient ->
@@ -577,6 +679,7 @@ Module TalmudicHermeneutics.
 
     | valid_gezerah_shavah_node : forall t1 t2 h v1 v2 w,
         has_conclusion t1 h ->
+        is_citation t2 ->
         tree_verses t1 = [v1] ->
         tree_verses t2 = [v2] ->
         valid_gezerah_shavah v1 v2 w h ->
@@ -603,6 +706,7 @@ Module TalmudicHermeneutics.
 
     | valid_klal_u_frat_node : forall t_klal t_prat h_in h_out v_klal v_prat restriction,
         has_conclusion t_klal h_in ->
+        is_citation t_prat ->
         tree_verses t_klal = [v_klal] ->
         tree_verses t_prat = [v_prat] ->
         valid_klal_u_frat v_klal v_prat h_in h_out restriction ->
@@ -610,6 +714,7 @@ Module TalmudicHermeneutics.
 
     | valid_prat_u_klal_node : forall t_prat t_klal h_in h_out v_prat v_klal,
         has_conclusion t_prat h_in ->
+        is_citation t_klal ->
         tree_verses t_prat = [v_prat] ->
         tree_verses t_klal = [v_klal] ->
         valid_prat_u_klal v_prat v_klal h_in h_out ->
@@ -617,6 +722,8 @@ Module TalmudicHermeneutics.
 
     | valid_klal_u_frat_u_klal_node : forall t1 t2 t3 h_in h_out v1 v2 v3 similar,
         has_conclusion t1 h_in ->
+        is_citation t2 ->
+        is_citation t3 ->
         tree_verses t1 = [v1] ->
         tree_verses t2 = [v2] ->
         tree_verses t3 = [v3] ->
@@ -625,6 +732,7 @@ Module TalmudicHermeneutics.
 
     | valid_klal_she_tzarich_node : forall t_klal t_prat h_in h_out v_klal v_prat,
         has_conclusion t_klal h_in ->
+        is_citation t_prat ->
         tree_verses t_klal = [v_klal] ->
         tree_verses t_prat = [v_prat] ->
         is_general v_klal ->
@@ -638,6 +746,7 @@ Module TalmudicHermeneutics.
 
     | valid_prat_she_tzarich_node : forall t_prat t_klal h_in h_out v_prat v_klal,
         has_conclusion t_prat h_in ->
+        is_citation t_klal ->
         tree_verses t_prat = [v_prat] ->
         tree_verses t_klal = [v_klal] ->
         is_particular v_prat ->
@@ -667,6 +776,7 @@ Module TalmudicHermeneutics.
     | valid_shnei_ketuvim_node : forall t1 t2 t3 h1 h2 h_out v1 v2 v3,
         has_conclusion t1 h1 ->
         has_conclusion t2 h2 ->
+        is_citation t3 ->
         tree_verses t1 = [v1] ->
         tree_verses t2 = [v2] ->
         tree_verses t3 = [v3] ->
@@ -730,10 +840,10 @@ Module TalmudicHermeneutics.
   Definition halakha_universe : list nat := [1; 2; 3; 4; 5; 6; 7; 8; 9; 10].
 
   Definition valid_halakha (h : Halakha) : Prop :=
-    In (halakha_id h) halakha_universe.
+    In h halakha_universe.
 
   Definition valid_halakha_b (h : Halakha) : bool :=
-    existsb (Nat.eqb (halakha_id h)) halakha_universe.
+    existsb (Nat.eqb h) halakha_universe.
 
   Lemma valid_halakha_b_correct : forall h,
     valid_halakha_b h = true <-> valid_halakha h.
@@ -743,7 +853,7 @@ Module TalmudicHermeneutics.
     rewrite existsb_exists.
     split.
     - intros [x [Hin Heq]]. rewrite Nat.eqb_eq in Heq. subst. exact Hin.
-    - intro Hin. exists (halakha_id h). split. exact Hin. apply Nat.eqb_refl.
+    - intro Hin. exists h. split. exact Hin. apply Nat.eqb_refl.
   Qed.
 
   Lemma halakha_universe_nodup : NoDup halakha_universe.
@@ -802,10 +912,11 @@ Module TalmudicHermeneutics.
   Qed.
 
   (** Authority-safe derivation helpers. *)
+  (** Scripture (leaves) is DOraita by nature; nodes inherit from conclusion. *)
   Definition child_authority (t : DerivationTree) : Authority :=
-    match tree_conclusion t with
-    | Some h' => halakha_authority h'
-    | None => DRabbanan
+    match t with
+    | Leaf _ => DOraita
+    | Node _ _ h => halakha_authority h
     end.
 
   Definition min_child_authority (children : list DerivationTree) : Authority :=
@@ -867,10 +978,9 @@ Module TalmudicHermeneutics.
     end.
 
   (** Validity of a derivation chain. *)
-  (** A derivation step is valid if it preserves or elevates authority appropriately. *)
+  (** A derivation step cannot upgrade authority: conclusion <= premise. *)
   Definition step_valid (m : Middah) (h_from h_to : Halakha) : Prop :=
-    authority_ge (halakha_authority h_to) (halakha_authority h_from) /\
-    (m = KalVaChomer -> halakha_authority h_from = DRabbanan -> halakha_authority h_to = DRabbanan).
+    authority_ge (halakha_authority h_from) (halakha_authority h_to).
 
   Fixpoint chain_valid (c : DerivationChain) : Prop :=
     match c with
@@ -959,10 +1069,9 @@ Module TalmudicHermeneutics.
     forall v h,
       karaite_derivation v h ->
       valid_halakha h ->
-      halakha_authority h = DRabbanan ->
       rabbinic_derivation v h.
   Proof.
-    intros v h Hd Hvalid Hauth.
+    intros v h Hd Hvalid.
     unfold rabbinic_derivation, karaite_derivation in *.
     exists (Node DavarHaLamedMeInyano [Leaf v] h).
     split.
@@ -975,7 +1084,7 @@ Module TalmudicHermeneutics.
           { exact Hvalid. }
           { split.
             - unfold authority_safe_node, min_child_authority. simpl.
-              rewrite Hauth. simpl. exact I.
+              destruct (halakha_authority h); simpl; exact I.
             - split; exact I. }
   Qed.
 
@@ -1051,10 +1160,10 @@ Module TalmudicHermeneutics.
     destruct Hawf as [_ [_ [Hsafe _]]].
     unfold authority_safe_node, min_child_authority, child_authority in *.
     simpl in Hsafe.
-    destruct (tree_conclusion t) as [h'|].
+    destruct t as [v | m' children' h'].
+    - destruct (halakha_authority h); simpl in *; auto.
     - destruct (halakha_authority h') eqn:Eh';
       destruct (halakha_authority h) eqn:Hauth; simpl in *; auto.
-    - destruct (halakha_authority h) eqn:Hauth; simpl in *; auto.
   Qed.
 
   (** Kal va-chomer cannot create d'Oraita from d'Rabbanan. *)
@@ -1165,17 +1274,20 @@ Module TalmudicHermeneutics.
 
   (** Similar_cases is an equivalence relation. *)
   Lemma similar_cases_refl : forall s, similar_cases s s.
-  Proof. intro s. unfold similar_cases. reflexivity. Qed.
+  Proof. intro s. unfold similar_cases. split; reflexivity. Qed.
 
   Lemma similar_cases_sym : forall s1 s2, similar_cases s1 s2 -> similar_cases s2 s1.
-  Proof. intros s1 s2. unfold similar_cases. auto. Qed.
+  Proof.
+    intros s1 s2 [Hsev Hcat].
+    unfold similar_cases. split; symmetry; assumption.
+  Qed.
 
   Lemma similar_cases_trans : forall s1 s2 s3,
     similar_cases s1 s2 -> similar_cases s2 s3 -> similar_cases s1 s3.
   Proof.
-    intros s1 s2 s3 H12 H23.
-    unfold similar_cases in *.
-    congruence.
+    intros s1 s2 s3 [Hsev12 Hcat12] [Hsev23 Hcat23].
+    unfold similar_cases.
+    split; congruence.
   Qed.
 
   (** ================================================================== *)
@@ -1187,9 +1299,9 @@ Module TalmudicHermeneutics.
   Definition verse_yom_tov : Verse := mkVerse 2 [10; 40; 50].
   Definition verse_chol : Verse := mkVerse 3 [60; 70].
 
-  Definition subject_shabbat : Subject := mkSubject 100 10.
-  Definition subject_yom_tov : Subject := mkSubject 101 5.
-  Definition subject_chol : Subject := mkSubject 102 1.
+  Definition subject_shabbat : Subject := mkSubject 100 10 1.
+  Definition subject_yom_tov : Subject := mkSubject 101 5 1.
+  Definition subject_chol : Subject := mkSubject 102 1 1.
 
   (** Witness: shabbat is stricter than yom_tov. *)
   Lemma witness_shabbat_stricter_yom_tov : stricter subject_shabbat subject_yom_tov.
@@ -1229,8 +1341,7 @@ Module TalmudicHermeneutics.
   (** WITNESS DERIVATION                                                  *)
   (** ================================================================== *)
 
-  Definition witness_halakha : Halakha :=
-    mkHalakha 1 (fun s => subject_id s = 100) Permits DRabbanan.
+  Definition witness_halakha : Halakha := 1.
 
   Definition witness_verse : Verse := mkVerse 1 [10; 20; 30].
 
@@ -1282,6 +1393,80 @@ Module TalmudicHermeneutics.
     - split.
       + simpl. reflexivity.
       + exact witness_tree_well_formed.
+  Qed.
+
+  (** ================================================================== *)
+  (** MULTI-STEP WORKED EXAMPLE: Depth-2 Derivation                      *)
+  (** ================================================================== *)
+
+  (** Scenario: halakha 2 applies to yom_tov (verse 2, severity 5).
+      By kal va-chomer, it should apply to shabbat (severity 10, stricter).
+      Tree structure:
+        Node KalVaChomer
+          [ Node DavarHaLamedMeInyano [Leaf verse_yom_tov] 2  -- premise
+          ; Leaf verse_shabbat                                -- strict citation
+          ]
+          2  -- same halakha, extended scope
+  *)
+
+  Definition multistep_premise_tree : DerivationTree :=
+    Node DavarHaLamedMeInyano [Leaf verse_yom_tov] 2.
+
+  Definition multistep_citation : DerivationTree :=
+    Leaf verse_shabbat.
+
+  Definition multistep_tree : DerivationTree :=
+    Node KalVaChomer [multistep_premise_tree; multistep_citation] 2.
+
+  Lemma multistep_tree_depth : tree_depth multistep_tree = 2.
+  Proof. reflexivity. Qed.
+
+  Lemma multistep_tree_middot : tree_middot multistep_tree = [KalVaChomer; DavarHaLamedMeInyano].
+  Proof. reflexivity. Qed.
+
+  Lemma multistep_premise_derived : derived_from 2 verse_yom_tov.
+  Proof.
+    apply derived_base.
+    unfold base_derivation, corpus_contains, torah_corpus, verse_yom_tov.
+    simpl. right. left. reflexivity.
+  Qed.
+
+  Lemma multistep_premise_valid_node :
+    valid_node DavarHaLamedMeInyano [Leaf verse_yom_tov] 2.
+  Proof.
+    apply valid_context.
+    exact multistep_premise_derived.
+  Qed.
+
+  Lemma multistep_premise_valid_halakha : valid_halakha 2.
+  Proof.
+    unfold valid_halakha, halakha_universe. simpl.
+    right. left. reflexivity.
+  Qed.
+
+  Lemma multistep_premise_authority_safe :
+    authority_safe_node DavarHaLamedMeInyano [Leaf verse_yom_tov] 2.
+  Proof.
+    unfold authority_safe_node, min_child_authority, child_authority.
+    simpl. exact I.
+  Qed.
+
+  Lemma multistep_premise_well_formed : well_formed multistep_premise_tree.
+  Proof.
+    unfold multistep_premise_tree. simpl.
+    split.
+    - exact multistep_premise_valid_node.
+    - split.
+      + exact multistep_premise_valid_halakha.
+      + split.
+        * exact multistep_premise_authority_safe.
+        * split; exact I.
+  Qed.
+
+  Lemma multistep_citation_is_citation : is_citation multistep_citation.
+  Proof.
+    unfold is_citation, multistep_citation.
+    exists verse_shabbat. reflexivity.
   Qed.
 
   (** Example: A simple derivation tree with one middah application. *)
@@ -1511,7 +1696,7 @@ Module TalmudicHermeneutics.
     halakha_eq_id (chain_conclusion c1) (chain_base c2).
 
   Definition chains_compatible_b (c1 c2 : DerivationChain) : bool :=
-    Nat.eqb (halakha_id (chain_conclusion c1)) (halakha_id (chain_base c2)).
+    Nat.eqb (chain_conclusion c1) (chain_base c2).
 
   Fixpoint chain_append (c1 c2 : DerivationChain) : DerivationChain :=
     match c2 with
@@ -1597,17 +1782,20 @@ Module TalmudicHermeneutics.
 
   Definition subject_eq_b (s1 s2 : Subject) : bool :=
     Nat.eqb (subject_id s1) (subject_id s2) &&
-    Nat.eqb (subject_severity s1) (subject_severity s2).
+    Nat.eqb (subject_severity s1) (subject_severity s2) &&
+    Nat.eqb (subject_category s1) (subject_category s2).
 
   Lemma subject_eq_b_correct : forall s1 s2,
     subject_eq_b s1 s2 = true <->
-    subject_id s1 = subject_id s2 /\ subject_severity s1 = subject_severity s2.
+    subject_id s1 = subject_id s2 /\
+    subject_severity s1 = subject_severity s2 /\
+    subject_category s1 = subject_category s2.
   Proof.
     intros s1 s2.
     unfold subject_eq_b.
-    rewrite andb_true_iff.
-    rewrite 2 Nat.eqb_eq.
-    reflexivity.
+    rewrite 2 andb_true_iff.
+    rewrite 3 Nat.eqb_eq.
+    tauto.
   Qed.
 
   Definition stricter_b (s1 s2 : Subject) : bool :=
