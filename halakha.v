@@ -162,18 +162,59 @@ Module TalmudicHermeneutics.
   Definition contains_word (v : Verse) (w : Word) : Prop :=
     In w (verse_words v).
 
-  (** Semantic word constants for klal/prat and superfluity analysis. *)
-  Definition word_kol : Word := 100.
-  Definition word_ish : Word := 101.
-  Definition word_davar : Word := 102.
+  (** ================================================================== *)
+  (** WORD CONSTANTS LEXICON                                              *)
+  (** Hebrew terms with transliterations and semantic categories.         *)
+  (** ================================================================== *)
 
-  Definition quantifier_words : list Word := [word_kol; 103; 104].
-  Definition specific_words : list Word := [word_ish; word_davar; 105; 106].
+  (** Quantifier words (klal/generalization markers). *)
+  Definition word_kol : Word := 100.       (** כל (kol) = "all/every" *)
+  Definition word_kol_ha : Word := 101.    (** כל ה (kol ha-) = "all the" *)
+  Definition word_lekol : Word := 102.     (** לכל (le-khol) = "to all" *)
+
+  (** Specific words (prat/particularization markers). *)
+  Definition word_ish : Word := 110.       (** איש (ish) = "a man/person" *)
+  Definition word_davar : Word := 111.     (** דבר (davar) = "a thing" *)
+  Definition word_echad : Word := 112.     (** אחד (echad) = "one" *)
+  Definition word_zeh : Word := 113.       (** זה (zeh) = "this" *)
+
+  (** Expansion words (ribui markers - add inclusions). *)
+  Definition word_et : Word := 200.        (** את (et) = direct object marker *)
+  Definition word_gam : Word := 201.       (** גם (gam) = "also/too" *)
+  Definition word_af : Word := 202.        (** אף (af) = "even/also" *)
+
+  (** Limitation words (mi'ut markers - add exclusions). *)
+  Definition word_akh : Word := 210.       (** אך (akh) = "but/only/surely" *)
+  Definition word_rak : Word := 211.       (** רק (rak) = "only/except" *)
+  Definition word_min : Word := 212.       (** מן (min) = "from" (partitive) *)
+
+  (** Action words (verb roots for matching). *)
+  Definition word_aseh : Word := 300.      (** עשה (aseh) = "do/make" *)
+  Definition word_natan : Word := 301.     (** נתן (natan) = "give" *)
+  Definition word_lakach : Word := 302.    (** לקח (lakach) = "take" *)
+  Definition word_amar : Word := 303.      (** אמר (amar) = "say" *)
+
+  (** Subject words (noun categories). *)
+  Definition word_adam : Word := 310.      (** אדם (adam) = "person/human" *)
+  Definition word_kohen : Word := 311.     (** כהן (kohen) = "priest" *)
+  Definition word_yisrael : Word := 312.   (** ישראל (yisrael) = "Israel" *)
+  Definition word_ger : Word := 313.       (** גר (ger) = "convert/stranger" *)
+
+  (** Object words (common nouns). *)
+  Definition word_basar : Word := 320.     (** בשר (basar) = "meat/flesh" *)
+  Definition word_dam : Word := 321.       (** דם (dam) = "blood" *)
+  Definition word_mayim : Word := 322.     (** מים (mayim) = "water" *)
+  Definition word_eish : Word := 323.      (** אש (eish) = "fire" *)
+
+  Definition quantifier_words : list Word := [word_kol; word_kol_ha; word_lekol].
+  Definition specific_words : list Word := [word_ish; word_davar; word_echad; word_zeh].
+  Definition expansion_words : list Word := [word_et; word_gam; word_af].
+  Definition limitation_words : list Word := [word_akh; word_rak; word_min].
 
   (** Semantic word categories for determining superfluity. *)
-  Definition action_words : list Word := [200; 201; 202; 203].
-  Definition subject_words : list Word := [210; 211; 212; 213].
-  Definition object_words : list Word := [220; 221; 222; 223].
+  Definition action_words : list Word := [word_aseh; word_natan; word_lakach; word_amar].
+  Definition subject_words : list Word := [word_adam; word_kohen; word_yisrael; word_ger].
+  Definition object_words : list Word := [word_basar; word_dam; word_mayim; word_eish].
 
   Definition is_semantic_core_word (w : Word) : bool :=
     existsb (Nat.eqb w) quantifier_words ||
@@ -304,8 +345,20 @@ Module TalmudicHermeneutics.
       + simpl. rewrite 2 Nat.eqb_refl. reflexivity.
   Qed.
 
+  (** Torah corpus: ~20 entries covering representative halakha-verse pairs.
+      Format: (halakha_id, verse_id)
+      Categories represented:
+        - Shabbat/Yom Tov (1-4)
+        - Kashrut (5-8)
+        - Personal status (9-12)
+        - Monetary (13-16)
+        - Ritual purity (17-20) *)
   Definition torah_corpus : Corpus :=
-    [ (1, 1); (2, 2); (3, 1); (4, 3) ].
+    [ (1, 1);   (2, 2);   (3, 3);   (4, 4);
+      (5, 5);   (6, 6);   (7, 7);   (8, 8);
+      (9, 9);   (10, 10); (11, 11); (12, 12);
+      (13, 13); (14, 14); (15, 15); (16, 16);
+      (17, 17); (18, 18); (19, 19); (20, 20) ].
 
   Definition base_derivation (h : Halakha) (v : Verse) : Prop :=
     corpus_contains torah_corpus h (verse_id v).
@@ -324,12 +377,11 @@ Module TalmudicHermeneutics.
   Lemma corpus_consistent : NoDup (map fst torah_corpus).
   Proof.
     unfold torah_corpus. simpl.
-    apply NoDup_cons. { simpl. intros [H|[H|[H|H]]]; discriminate || exact H. }
-    apply NoDup_cons. { simpl. intros [H|[H|H]]; discriminate || exact H. }
-    apply NoDup_cons. { simpl. intros [H|H]; discriminate || exact H. }
-    apply NoDup_cons. { simpl. intros H; exact H. }
-    apply NoDup_nil.
+    repeat constructor; simpl; (intros H; repeat (destruct H as [H|H]; [discriminate H|]); exact H).
   Qed.
+
+  Lemma corpus_length : length torah_corpus = 20.
+  Proof. reflexivity. Qed.
 
   Inductive derived_from : Halakha -> Verse -> Prop :=
     | derived_base : forall h v,
@@ -355,21 +407,45 @@ Module TalmudicHermeneutics.
     | DavarSheHayahBiKlal : Middah
     | DavarYatzaLeLamed : Middah
     | DavarHaLamedMeInyano : Middah
-    | ShneiKetuvimMakhchishim : Middah.
+    | ShneiKetuvimMakhchishim : Middah
+    | Hekkesh : Middah
+    | Ribui : Middah
+    | Miut : Middah
+    | Sevarah : Middah.
 
   Definition middah_eq_dec : forall m1 m2 : Middah, {m1 = m2} + {m1 <> m2}.
   Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+  (** Sevarah: logical reasoning outside textual exegesis.
+      A sevarah is a rational argument that establishes or modifies halakha
+      through common-sense inference rather than verse interpretation.
+      Examples: "ein osin mitzvot chavilot chavilot" (don't bundle mitzvot).
+      Sevarah can create d'Rabbanan halakhot but cannot override d'Oraita. *)
+
+  Record SvaraJustification := mkSvara {
+    svara_premise : Prop;
+    svara_name : nat;
+    svara_conclusion : Halakha -> Halakha -> Prop
+  }.
+
+  Definition svara_valid (sj : SvaraJustification) (h_in h_out : Halakha) : Prop :=
+    svara_premise sj /\
+    svara_conclusion sj h_in h_out /\
+    halakha_authority h_out = DRabbanan.
+
+  Definition valid_sevarah (h_in h_out : Halakha) (sj : SvaraJustification) : Prop :=
+    svara_valid sj h_in h_out.
 
   Definition all_middot : list Middah :=
     [KalVaChomer; GezerahShavah; BinyanAvEchad; BinyanAvShnei;
      KlalUFrat; PratUKlal; KlalUFratUKlal; KlalSheTzarichLeFrat;
      PratSheTzarichLeKlal; DavarSheHayahBiKlal; DavarYatzaLeLamed;
-     DavarHaLamedMeInyano; ShneiKetuvimMakhchishim].
+     DavarHaLamedMeInyano; ShneiKetuvimMakhchishim; Hekkesh; Ribui; Miut; Sevarah].
 
   Lemma all_middot_complete : forall m, In m all_middot.
-  Proof. intros []; simpl; auto 15. Qed.
+  Proof. intros []; simpl; auto 19. Qed.
 
-  Lemma all_middot_length : length all_middot = 13.
+  Lemma all_middot_length : length all_middot = 17.
   Proof. reflexivity. Qed.
 
   (** Derivation: a halakha derived via a middah from source verses. *)
@@ -568,6 +644,40 @@ Module TalmudicHermeneutics.
     contradicts v1 v2 /\
     resolves v3 v1 v2 /\
     derived_from h v3.
+
+  (** Hekkesh: juxtaposition inference. Two adjacent verses imply shared halakha.
+      If v1 and v2 are adjacent and h is derived from v1, then h applies to v2. *)
+  Definition valid_hekkesh (v1 v2 : Verse) (h : Halakha) : Prop :=
+    verses_adjacent v1 v2 /\
+    derived_from h v1.
+
+  (** Ribui: expansion by inclusion words. A verse containing an expansion word
+      (et, gam, af) implies the halakha extends to additional subjects. *)
+  Definition has_expansion_word (v : Verse) : Prop :=
+    exists w, In w (verse_words v) /\ In w expansion_words.
+
+  Definition has_expansion_word_b (v : Verse) : bool :=
+    existsb (fun w => existsb (Nat.eqb w) expansion_words) (verse_words v).
+
+  Definition valid_ribui (v : Verse) (h_in h_out : Halakha) (additional : Subject -> Prop) : Prop :=
+    has_expansion_word v /\
+    derived_from h_in v /\
+    halakha_eq_id h_in h_out /\
+    (forall s, halakha_scope h_out s <-> (halakha_scope h_in s \/ additional s)).
+
+  (** Mi'ut: limitation by exclusion words. A verse containing a limitation word
+      (akh, rak) implies the halakha excludes certain subjects. *)
+  Definition has_limitation_word (v : Verse) : Prop :=
+    exists w, In w (verse_words v) /\ In w limitation_words.
+
+  Definition has_limitation_word_b (v : Verse) : bool :=
+    existsb (fun w => existsb (Nat.eqb w) limitation_words) (verse_words v).
+
+  Definition valid_miut (v : Verse) (h_in h_out : Halakha) (excluded : Subject -> Prop) : Prop :=
+    has_limitation_word v /\
+    derived_from h_in v /\
+    halakha_eq_id h_in h_out /\
+    (forall s, halakha_scope h_out s <-> (halakha_scope h_in s /\ ~ excluded s)).
 
   Definition authority_ge (a1 a2 : Authority) : Prop :=
     match a1, a2 with
@@ -784,7 +894,33 @@ Module TalmudicHermeneutics.
         derived_from h_out v3 ->
         ~ halakha_conflicts h_out h1 ->
         ~ halakha_conflicts h_out h2 ->
-        valid_node ShneiKetuvimMakhchishim [t1; t2; t3] h_out.
+        valid_node ShneiKetuvimMakhchishim [t1; t2; t3] h_out
+
+    | valid_hekkesh_node : forall t1 t2 h v1 v2,
+        has_conclusion t1 h ->
+        is_citation t2 ->
+        tree_verses t1 = [v1] ->
+        tree_verses t2 = [v2] ->
+        valid_hekkesh v1 v2 h ->
+        valid_node Hekkesh [t1; t2] h
+
+    | valid_ribui_node : forall t h_in h_out v additional,
+        has_conclusion t h_in ->
+        tree_verses t = [v] ->
+        valid_ribui v h_in h_out additional ->
+        valid_node Ribui [t] h_out
+
+    | valid_miut_node : forall t h_in h_out v excluded,
+        has_conclusion t h_in ->
+        tree_verses t = [v] ->
+        valid_miut v h_in h_out excluded ->
+        valid_node Miut [t] h_out
+
+    | valid_sevarah_node : forall t h_in h_out sj,
+        has_conclusion t h_in ->
+        valid_sevarah h_in h_out sj ->
+        halakha_authority h_out = DRabbanan ->
+        valid_node Sevarah [t] h_out.
 
   (** Bridging theorems: connect standalone predicates to tree semantics. *)
 
@@ -919,23 +1055,23 @@ Module TalmudicHermeneutics.
     | Node _ _ h => halakha_authority h
     end.
 
-  Definition min_child_authority (children : list DerivationTree) : Authority :=
+  Definition floor_authority (children : list DerivationTree) : Authority :=
     if forallb (fun t => authority_ge_b (child_authority t) DOraita) children
     then DOraita
     else DRabbanan.
 
   Definition authority_safe_node (m : Middah) (children : list DerivationTree) (h : Halakha) : Prop :=
-    authority_ge (min_child_authority children) (halakha_authority h).
+    authority_ge (floor_authority children) (halakha_authority h).
 
   Lemma authority_safe_no_upgrade : forall m children h,
     authority_safe_node m children h ->
     halakha_authority h = DOraita ->
-    min_child_authority children = DOraita.
+    floor_authority children = DOraita.
   Proof.
     intros m children h Hsafe Hauth.
     unfold authority_safe_node in Hsafe.
     rewrite Hauth in Hsafe.
-    destruct (min_child_authority children); auto.
+    destruct (floor_authority children); auto.
     simpl in Hsafe. contradiction.
   Qed.
 
@@ -1054,15 +1190,16 @@ Module TalmudicHermeneutics.
       m = KlalUFratUKlal \/ m = KlalSheTzarichLeFrat \/
       m = PratSheTzarichLeKlal \/ m = DavarSheHayahBiKlal \/
       m = DavarYatzaLeLamed \/ m = DavarHaLamedMeInyano \/
-      m = ShneiKetuvimMakhchishim.
+      m = ShneiKetuvimMakhchishim \/ m = Hekkesh \/
+      m = Ribui \/ m = Miut \/ m = Sevarah.
   Proof.
     intro m.
     split.
     - intro H.
-      destruct m; auto 15.
+      destruct m; auto 19.
     - intro H.
-      destruct H as [H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|H]]]]]]]]]]]];
-      subst; simpl; auto 15.
+      destruct H as [H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|H]]]]]]]]]]]]]]]];
+      subst; simpl; auto 19.
   Qed.
 
   Theorem rabbinic_extends_karaite :
@@ -1083,7 +1220,7 @@ Module TalmudicHermeneutics.
         * split.
           { exact Hvalid. }
           { split.
-            - unfold authority_safe_node, min_child_authority. simpl.
+            - unfold authority_safe_node, floor_authority. simpl.
               destruct (halakha_authority h); simpl; exact I.
             - split; exact I. }
   Qed.
@@ -1158,7 +1295,7 @@ Module TalmudicHermeneutics.
     intros m t h Hawf.
     simpl in Hawf.
     destruct Hawf as [_ [_ [Hsafe _]]].
-    unfold authority_safe_node, min_child_authority, child_authority in *.
+    unfold authority_safe_node, floor_authority, child_authority in *.
     simpl in Hsafe.
     destruct t as [v | m' children' h'].
     - destruct (halakha_authority h); simpl in *; auto.
@@ -1368,7 +1505,7 @@ Module TalmudicHermeneutics.
 
   Lemma witness_tree_authority_safe : authority_safe_node DavarHaLamedMeInyano [Leaf witness_verse] witness_halakha.
   Proof.
-    unfold authority_safe_node, min_child_authority, child_authority, witness_halakha.
+    unfold authority_safe_node, floor_authority, child_authority, witness_halakha.
     simpl. exact I.
   Qed.
 
@@ -1447,7 +1584,7 @@ Module TalmudicHermeneutics.
   Lemma multistep_premise_authority_safe :
     authority_safe_node DavarHaLamedMeInyano [Leaf verse_yom_tov] 2.
   Proof.
-    unfold authority_safe_node, min_child_authority, child_authority.
+    unfold authority_safe_node, floor_authority, child_authority.
     simpl. exact I.
   Qed.
 
@@ -1529,6 +1666,10 @@ Module TalmudicHermeneutics.
     | DavarYatzaLeLamed => 11
     | DavarHaLamedMeInyano => 12
     | ShneiKetuvimMakhchishim => 13
+    | Hekkesh => 14
+    | Ribui => 15
+    | Miut => 16
+    | Sevarah => 17
     end.
 
   Lemma middah_name_injective : forall m1 m2,
@@ -1666,6 +1807,10 @@ Module TalmudicHermeneutics.
   Lemma all_middot_NoDup : NoDup all_middot.
   Proof.
     unfold all_middot.
+    apply NoDup_cons. { simpl. intros [H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|H]]]]]]]]]]]]]]]]; inversion H. }
+    apply NoDup_cons. { simpl. intros [H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|H]]]]]]]]]]]]]]]; inversion H. }
+    apply NoDup_cons. { simpl. intros [H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|H]]]]]]]]]]]]]]; inversion H. }
+    apply NoDup_cons. { simpl. intros [H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|H]]]]]]]]]]]]]; inversion H. }
     apply NoDup_cons. { simpl. intros [H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|H]]]]]]]]]]]]; inversion H. }
     apply NoDup_cons. { simpl. intros [H|[H|[H|[H|[H|[H|[H|[H|[H|[H|[H|H]]]]]]]]]]]; inversion H. }
     apply NoDup_cons. { simpl. intros [H|[H|[H|[H|[H|[H|[H|[H|[H|[H|H]]]]]]]]]]; inversion H. }
@@ -1839,7 +1984,7 @@ End TalmudicHermeneutics.
 Require Import ExtrOcamlBasic.
 Require Import ExtrOcamlNatInt.
 
-Extract Inductive TalmudicHermeneutics.Middah => "middah" ["KalVaChomer" "GezerahShavah" "BinyanAvEchad" "BinyanAvShnei" "KlalUFrat" "PratUKlal" "KlalUFratUKlal" "KlalSheTzarichLeFrat" "PratSheTzarichLeKlal" "DavarSheHayahBiKlal" "DavarYatzaLeLamed" "DavarHaLamedMeInyano" "ShneiKetuvimMakhchishim"].
+Extract Inductive TalmudicHermeneutics.Middah => "middah" ["KalVaChomer" "GezerahShavah" "BinyanAvEchad" "BinyanAvShnei" "KlalUFrat" "PratUKlal" "KlalUFratUKlal" "KlalSheTzarichLeFrat" "PratSheTzarichLeKlal" "DavarSheHayahBiKlal" "DavarYatzaLeLamed" "DavarHaLamedMeInyano" "ShneiKetuvimMakhchishim" "Hekkesh" "Ribui" "Miut" "Sevarah"].
 
 Extract Inductive TalmudicHermeneutics.Authority => "authority" ["DOraita" "DRabbanan"].
 
