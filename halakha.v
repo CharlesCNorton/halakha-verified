@@ -40,6 +40,11 @@ Module Primitives.
   Definition ShoreshId := nat.
   Definition CategoryId := nat.
 
+  Definition reserved_subject_id : SubjectId := 0.
+
+  Definition valid_subject_id (id : SubjectId) : bool :=
+    negb (id =? reserved_subject_id).
+
   Record Subject := mkSubject {
     subj_id : SubjectId;
     subj_severity : nat;
@@ -59,6 +64,16 @@ Module Primitives.
 
   Definition similar_cases_b (s1 s2 : Subject) : bool :=
     (subj_severity s1 =? subj_severity s2) && same_category_b s1 s2.
+
+  Lemma subject_eqb_eq : forall s1 s2, subject_eqb s1 s2 = true <-> s1 = s2.
+  Proof.
+    intros [id1 sev1 cat1] [id2 sev2 cat2].
+    unfold subject_eqb. simpl.
+    rewrite !Bool.andb_true_iff, !Nat.eqb_eq.
+    split.
+    - intros [[Hid Hsev] Hcat]. congruence.
+    - intro H. inversion H. auto.
+  Qed.
 
 End Primitives.
 
@@ -121,6 +136,26 @@ Module ScopeDSL.
     | _, _ => false
     end.
 
+  Lemma pred_eqb_eq : forall p1 p2, pred_eqb p1 p2 = true <-> p1 = p2.
+  Proof.
+    induction p1; destruct p2; simpl; split; intro H;
+    try discriminate; try reflexivity;
+    try (rewrite Nat.eqb_eq in H; congruence);
+    try (rewrite Nat.eqb_eq; congruence);
+    try (rewrite subject_eqb_eq in H; congruence);
+    try (rewrite subject_eqb_eq; congruence).
+    - rewrite Bool.andb_true_iff in H. destruct H as [H1 H2].
+      apply IHp1_1 in H1. apply IHp1_2 in H2. congruence.
+    - inversion H. subst. rewrite Bool.andb_true_iff.
+      split; apply IHp1_1 || apply IHp1_2; reflexivity.
+    - rewrite Bool.andb_true_iff in H. destruct H as [H1 H2].
+      apply IHp1_1 in H1. apply IHp1_2 in H2. congruence.
+    - inversion H. subst. rewrite Bool.andb_true_iff.
+      split; apply IHp1_1 || apply IHp1_2; reflexivity.
+    - apply IHp1 in H. congruence.
+    - inversion H. subst. apply IHp1. reflexivity.
+  Qed.
+
 End ScopeDSL.
 
 Export ScopeDSL.
@@ -172,6 +207,11 @@ Module MiddotDef.
 
   Lemma all_middot_length : length all_middot = 13.
   Proof. reflexivity. Qed.
+
+  Lemma middah_eqb_eq : forall m1 m2, middah_eqb m1 m2 = true <-> m1 = m2.
+  Proof.
+    intros [] []; simpl; split; intro H; try discriminate; try reflexivity.
+  Qed.
 
 End MiddotDef.
 
@@ -344,11 +384,38 @@ Module DerivationTrees.
         1 + fold_right max 0 (map dt_depth children)
     end.
 
-  Fixpoint dt_verses (t : DerivationTree) : list VerseId :=
+  Fixpoint dt_leaf_verses (t : DerivationTree) : list VerseId :=
     match t with
     | DTLeaf v _ => [v]
-    | DTNode _ _ children => flat_map dt_verses children
+    | DTNode _ _ children => flat_map dt_leaf_verses children
     end.
+
+  Definition cert_verses (m : Middah) (cert : NodeCert m) : list VerseId :=
+    match cert with
+    | CertKVC _ => []
+    | CertGS w => [gs_verse1 w; gs_verse2 w]
+    | CertBA _ => []
+    | CertBA2 _ => []
+    | CertKUF w => [kuf_klal_verse w; kuf_prat_verse w]
+    | CertPUK w => [puk_prat_verse w; puk_klal_verse w]
+    | CertKFK w => [kfk_klal1_verse w; kfk_prat_verse w; kfk_klal2_verse w]
+    | CertKTF w => [kuf_klal_verse w; kuf_prat_verse w]
+    | CertPTK w => [puk_prat_verse w; puk_klal_verse w]
+    | CertDSH _ => []
+    | CertDYL w => [dyl_teaching_verse w]
+    | CertDMI w => [dmi_verse w; dmi_context_verse w]
+    | CertSKM w => [skm_verse1 w; skm_verse2 w; skm_verse3 w]
+    end.
+
+  Fixpoint dt_cert_verses (t : DerivationTree) : list VerseId :=
+    match t with
+    | DTLeaf _ _ => []
+    | DTNode m cert children =>
+        cert_verses m cert ++ flat_map dt_cert_verses children
+    end.
+
+  Definition dt_all_verses (t : DerivationTree) : list VerseId :=
+    dt_leaf_verses t ++ dt_cert_verses t.
 
   Definition dt_requires_children (m : Middah) : nat :=
     match m with
@@ -378,7 +445,12 @@ Module Interpreter.
         let base := child_scope children dt_eval s in
         match cert with
         | CertKVC w =>
-            base || (same_category_b s (kvc_strict w) && stricter_b s (kvc_lenient w))
+            let dayo_ok :=
+              match kvc_dayo w with
+              | DayoStrict => subj_severity s <=? subj_severity (kvc_lenient w)
+              | DayoExtend n => subj_severity s <=? subj_severity (kvc_lenient w) + n
+              end in
+            base || (same_category_b s (kvc_strict w) && stricter_b s (kvc_lenient w) && dayo_ok)
         | CertGS _ =>
             base
         | CertBA w =>
@@ -439,20 +511,35 @@ Module Validity.
     verse_is_general (vc_verses ctx) (puk_klal_verse w) &&
     verses_adjacent (vc_verses ctx) (puk_prat_verse w) (puk_klal_verse w).
 
-  Definition pred_nontrivial (p : ScopePred) : bool :=
+  Fixpoint pred_trivially_true (p : ScopePred) : bool :=
     match p with
-    | PredTrue => false
-    | PredFalse => false
-    | _ => true
+    | PredTrue => true
+    | PredNot q => pred_trivially_false q
+    | PredOr p1 p2 => pred_trivially_true p1 || pred_trivially_true p2
+    | PredAnd p1 p2 => pred_trivially_true p1 && pred_trivially_true p2
+    | _ => false
+    end
+  with pred_trivially_false (p : ScopePred) : bool :=
+    match p with
+    | PredFalse => true
+    | PredNot q => pred_trivially_true q
+    | PredAnd p1 p2 => pred_trivially_false p1 || pred_trivially_false p2
+    | PredOr p1 p2 => pred_trivially_false p1 && pred_trivially_false p2
+    | _ => false
     end.
 
+  Definition pred_nontrivial (p : ScopePred) : bool :=
+    negb (pred_trivially_true p) && negb (pred_trivially_false p).
+
   Definition valid_ba (w : BACert) : bool :=
-    negb (subj_id (ba_paradigm w) =? 0).
+    valid_subject_id (subj_id (ba_paradigm w)).
 
   Definition valid_ba2 (w : BA2Cert) : bool :=
-    negb (subj_id (ba2_paradigm1 w) =? 0) &&
-    negb (subj_id (ba2_paradigm2 w) =? 0) &&
-    negb (subj_id (ba2_paradigm1 w) =? subj_id (ba2_paradigm2 w)).
+    valid_subject_id (subj_id (ba2_paradigm1 w)) &&
+    valid_subject_id (subj_id (ba2_paradigm2 w)) &&
+    negb (subj_id (ba2_paradigm1 w) =? subj_id (ba2_paradigm2 w)) &&
+    (subj_category (ba2_paradigm1 w) =? ba2_common_category w) &&
+    (subj_category (ba2_paradigm2 w) =? ba2_common_category w).
 
   Definition valid_dsh (w : DSHCert) : bool :=
     pred_nontrivial (dsh_exception w).
@@ -501,6 +588,29 @@ Module Validity.
     | CertSKM w => valid_skm ctx w
     end.
 
+  Definition verses_anchored (required : list VerseId) (available : list VerseId) : bool :=
+    forallb (fun v => existsb (fun v' => v =? v') available) required.
+
+  Definition children_leaf_verses (children : list DerivationTree) : list VerseId :=
+    flat_map dt_leaf_verses children.
+
+  Definition cert_anchored_verses (m : Middah) (cert : NodeCert m) : list VerseId :=
+    match cert with
+    | CertKVC _ => []
+    | CertGS _ => []
+    | CertBA _ => []
+    | CertBA2 _ => []
+    | CertKUF w => [kuf_klal_verse w; kuf_prat_verse w]
+    | CertPUK w => [puk_prat_verse w; puk_klal_verse w]
+    | CertKFK w => [kfk_klal1_verse w; kfk_prat_verse w; kfk_klal2_verse w]
+    | CertKTF w => [kuf_klal_verse w; kuf_prat_verse w]
+    | CertPTK w => [puk_prat_verse w; puk_klal_verse w]
+    | CertDSH _ => []
+    | CertDYL _ => []
+    | CertDMI _ => []
+    | CertSKM _ => []
+    end.
+
   Fixpoint dt_valid (ctx : ValidationContext) (t : DerivationTree) : bool :=
     match t with
     | DTLeaf vid _ =>
@@ -511,6 +621,7 @@ Module Validity.
     | DTNode m cert children =>
         valid_cert ctx m cert &&
         (length children =? dt_requires_children m) &&
+        verses_anchored (cert_anchored_verses m cert) (children_leaf_verses children) &&
         forallb (dt_valid ctx) children
     end.
 
@@ -527,23 +638,18 @@ Export Validity.
 
 Module CompiledLaw.
 
-  Definition dt_computes (t : DerivationTree) (f : Subject -> bool) : Prop :=
-    forall s, f s = dt_eval t s.
-
   Record CompiledHalakha := mkCompiledHalakha {
     ch_id : HalakhaId;
-    ch_scope : Subject -> bool;
-    ch_derivation : DerivationTree;
-    ch_soundness : dt_computes ch_derivation ch_scope
+    ch_derivation : DerivationTree
   }.
 
   Definition ch_applies (ch : CompiledHalakha) (s : Subject) : bool :=
-    ch_scope ch s.
+    dt_eval (ch_derivation ch) s.
 
   Lemma ch_applies_eval : forall ch s,
     ch_applies ch s = dt_eval (ch_derivation ch) s.
   Proof.
-    intros ch s. unfold ch_applies. apply (ch_soundness ch).
+    intros ch s. reflexivity.
   Qed.
 
   Record ValidatedHalakha := mkValidatedHalakha {
@@ -580,184 +686,32 @@ Export CompiledLaw.
 
 Module Transformers.
 
-  Lemma dt_eval_node_singleton : forall m (cert : NodeCert m) child s,
-    dt_eval (DTNode m cert [child]) s =
-    match cert with
-    | CertKVC w => dt_eval child s || (same_category_b s (kvc_strict w) && stricter_b s (kvc_lenient w))
-    | CertGS _ => dt_eval child s
-    | CertBA w => dt_eval child s || similar_cases_b s (ba_paradigm w)
-    | CertBA2 w => dt_eval child s || (subj_category s =? ba2_common_category w)
-    | CertKUF w => dt_eval child s && eval_pred (kuf_restriction w) s
-    | CertPUK w => dt_eval child s || eval_pred (puk_expansion w) s
-    | CertKFK w => dt_eval child s && eval_pred (kfk_similarity w) s
-    | CertKTF w => dt_eval child s && eval_pred (kuf_restriction w) s
-    | CertPTK w => dt_eval child s || eval_pred (puk_expansion w) s
-    | CertDSH w => dt_eval child s && negb (eval_pred (dsh_exception w) s)
-    | CertDYL w => dt_eval child s && eval_pred (dyl_modifier w) s
-    | CertDMI _ => dt_eval child s
-    | CertSKM w => dt_eval child s && eval_pred (skm_resolution w) s
-    end.
-  Proof.
-    intros m cert child s.
-    destruct cert; simpl; unfold child_scope; simpl; rewrite orb_false_r; reflexivity.
-  Qed.
+  Definition transform_kvc (base : CompiledHalakha) (w : KVCCert) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (DTNode KalVaChomer (CertKVC w) [ch_derivation base]).
 
-  Definition transform_kvc
-    (base : CompiledHalakha)
-    (w : KVCCert)
-    (new_id : HalakhaId)
-    : CompiledHalakha.
-  Proof.
-    refine (mkCompiledHalakha
-      new_id
-      (fun s => ch_scope base s || (same_category_b s (kvc_strict w) && stricter_b s (kvc_lenient w)))
-      (DTNode KalVaChomer (CertKVC w) [ch_derivation base])
-      _).
-    intro s.
-    rewrite dt_eval_node_singleton.
-    rewrite (ch_soundness base s).
-    reflexivity.
-  Defined.
+  Definition transform_restrict (base : CompiledHalakha) (klal prat : VerseId) (restriction : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (DTNode KlalUFrat (CertKUF (mkKUFCert klal prat restriction)) [ch_derivation base]).
 
-  Definition transform_restrict
-    (base : CompiledHalakha)
-    (klal prat : VerseId)
-    (restriction : ScopePred)
-    (new_id : HalakhaId)
-    : CompiledHalakha.
-  Proof.
-    refine (mkCompiledHalakha
-      new_id
-      (fun s => ch_scope base s && eval_pred restriction s)
-      (DTNode KlalUFrat (CertKUF (mkKUFCert klal prat restriction)) [ch_derivation base])
-      _).
-    intro s.
-    rewrite dt_eval_node_singleton.
-    rewrite (ch_soundness base s).
-    reflexivity.
-  Defined.
+  Definition transform_expand (base : CompiledHalakha) (prat klal : VerseId) (expansion : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (DTNode PratUKlal (CertPUK (mkPUKCert prat klal expansion)) [ch_derivation base]).
 
-  Definition transform_expand
-    (base : CompiledHalakha)
-    (prat klal : VerseId)
-    (expansion : ScopePred)
-    (new_id : HalakhaId)
-    : CompiledHalakha.
-  Proof.
-    refine (mkCompiledHalakha
-      new_id
-      (fun s => ch_scope base s || eval_pred expansion s)
-      (DTNode PratUKlal (CertPUK (mkPUKCert prat klal expansion)) [ch_derivation base])
-      _).
-    intro s.
-    rewrite dt_eval_node_singleton.
-    rewrite (ch_soundness base s).
-    reflexivity.
-  Defined.
+  Definition transform_exception (base : CompiledHalakha) (exception : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (DTNode DavarSheHayahBiKlal (CertDSH (mkDSHCert exception)) [ch_derivation base]).
 
-  Definition transform_exception
-    (base : CompiledHalakha)
-    (exception : ScopePred)
-    (new_id : HalakhaId)
-    : CompiledHalakha.
-  Proof.
-    refine (mkCompiledHalakha
-      new_id
-      (fun s => ch_scope base s && negb (eval_pred exception s))
-      (DTNode DavarSheHayahBiKlal (CertDSH (mkDSHCert exception)) [ch_derivation base])
-      _).
-    intro s.
-    rewrite dt_eval_node_singleton.
-    rewrite (ch_soundness base s).
-    reflexivity.
-  Defined.
+  Definition transform_gs (base : CompiledHalakha) (w : GSCert) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (DTNode GezerahShavah (CertGS w) [ch_derivation base]).
 
-  Definition transform_gs
-    (base : CompiledHalakha)
-    (w : GSCert)
-    (new_id : HalakhaId)
-    : CompiledHalakha.
-  Proof.
-    refine (mkCompiledHalakha
-      new_id
-      (ch_scope base)
-      (DTNode GezerahShavah (CertGS w) [ch_derivation base])
-      _).
-    intro s.
-    rewrite dt_eval_node_singleton.
-    rewrite (ch_soundness base s).
-    reflexivity.
-  Defined.
+  Definition transform_ba (base : CompiledHalakha) (paradigm : Subject) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (DTNode BinyanAvEchad (CertBA (mkBACert paradigm)) [ch_derivation base]).
 
-  Definition transform_ba
-    (base : CompiledHalakha)
-    (paradigm : Subject)
-    (new_id : HalakhaId)
-    : CompiledHalakha.
-  Proof.
-    refine (mkCompiledHalakha
-      new_id
-      (fun s => ch_scope base s || similar_cases_b s paradigm)
-      (DTNode BinyanAvEchad (CertBA (mkBACert paradigm)) [ch_derivation base])
-      _).
-    intro s.
-    rewrite dt_eval_node_singleton.
-    rewrite (ch_soundness base s).
-    reflexivity.
-  Defined.
+  Definition transform_dmi (base : CompiledHalakha) (verse context_verse : VerseId) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (DTNode DavarHaLamedMeInyano (CertDMI (mkDMICert verse context_verse)) [ch_derivation base]).
 
-  Definition transform_dmi
-    (base : CompiledHalakha)
-    (verse context_verse : VerseId)
-    (new_id : HalakhaId)
-    : CompiledHalakha.
-  Proof.
-    refine (mkCompiledHalakha
-      new_id
-      (ch_scope base)
-      (DTNode DavarHaLamedMeInyano (CertDMI (mkDMICert verse context_verse)) [ch_derivation base])
-      _).
-    intro s.
-    rewrite dt_eval_node_singleton.
-    rewrite (ch_soundness base s).
-    reflexivity.
-  Defined.
+  Definition transform_dyl (base : CompiledHalakha) (teaching_verse : VerseId) (modifier : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (DTNode DavarYatzaLeLamed (CertDYL (mkDYLCert teaching_verse modifier)) [ch_derivation base]).
 
-  Definition transform_dyl
-    (base : CompiledHalakha)
-    (teaching_verse : VerseId)
-    (modifier : ScopePred)
-    (new_id : HalakhaId)
-    : CompiledHalakha.
-  Proof.
-    refine (mkCompiledHalakha
-      new_id
-      (fun s => ch_scope base s && eval_pred modifier s)
-      (DTNode DavarYatzaLeLamed (CertDYL (mkDYLCert teaching_verse modifier)) [ch_derivation base])
-      _).
-    intro s.
-    rewrite dt_eval_node_singleton.
-    rewrite (ch_soundness base s).
-    reflexivity.
-  Defined.
-
-  Definition transform_kfk
-    (base : CompiledHalakha)
-    (klal1 prat klal2 : VerseId)
-    (similarity : ScopePred)
-    (new_id : HalakhaId)
-    : CompiledHalakha.
-  Proof.
-    refine (mkCompiledHalakha
-      new_id
-      (fun s => ch_scope base s && eval_pred similarity s)
-      (DTNode KlalUFratUKlal (CertKFK (mkKFKCert klal1 prat klal2 similarity)) [ch_derivation base])
-      _).
-    intro s.
-    rewrite dt_eval_node_singleton.
-    rewrite (ch_soundness base s).
-    reflexivity.
-  Defined.
+  Definition transform_kfk (base : CompiledHalakha) (klal1 prat klal2 : VerseId) (similarity : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (DTNode KlalUFratUKlal (CertKFK (mkKFKCert klal1 prat klal2 similarity)) [ch_derivation base]).
 
 End Transformers.
 
@@ -808,6 +762,8 @@ Module ValidatedTransformers.
     (restriction : ScopePred)
     (new_id : HalakhaId)
     (Hvalid : valid_kuf (vh_context vh) (mkKUFCert klal prat restriction) = true)
+    (Hanchor : existsb (fun v' => klal =? v') (dt_leaf_verses (ch_derivation (vh_halakha vh)) ++ []) &&
+               (existsb (fun v' => prat =? v') (dt_leaf_verses (ch_derivation (vh_halakha vh)) ++ []) && true) = true)
     : ValidatedHalakha.
   Proof.
     refine (mkValidatedHalakha
@@ -815,8 +771,7 @@ Module ValidatedTransformers.
       (vh_context vh)
       _).
     simpl.
-    rewrite Hvalid. simpl.
-    rewrite (vh_valid vh). reflexivity.
+    rewrite Hvalid, Hanchor, (vh_valid vh). reflexivity.
   Defined.
 
   Definition vtransform_expand
@@ -825,6 +780,8 @@ Module ValidatedTransformers.
     (expansion : ScopePred)
     (new_id : HalakhaId)
     (Hvalid : valid_puk (vh_context vh) (mkPUKCert prat klal expansion) = true)
+    (Hanchor : existsb (fun v' => prat =? v') (dt_leaf_verses (ch_derivation (vh_halakha vh)) ++ []) &&
+               (existsb (fun v' => klal =? v') (dt_leaf_verses (ch_derivation (vh_halakha vh)) ++ []) && true) = true)
     : ValidatedHalakha.
   Proof.
     refine (mkValidatedHalakha
@@ -832,8 +789,7 @@ Module ValidatedTransformers.
       (vh_context vh)
       _).
     simpl.
-    rewrite Hvalid. simpl.
-    rewrite (vh_valid vh). reflexivity.
+    rewrite Hvalid, Hanchor, (vh_valid vh). reflexivity.
   Defined.
 
   Definition vtransform_ba
@@ -878,22 +834,15 @@ Export ValidatedTransformers.
 
 Module BaseDerivation.
 
-  Definition base_halakha (vid : VerseId) (scope : ScopePred) (hid : HalakhaId) : CompiledHalakha.
-  Proof.
-    refine (mkCompiledHalakha
-      hid
-      (eval_pred scope)
-      (DTLeaf vid scope)
-      _).
-    intro s. reflexivity.
-  Defined.
+  Definition base_halakha (vid : VerseId) (scope : ScopePred) (hid : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha hid (DTLeaf vid scope).
 
 End BaseDerivation.
 
 Export BaseDerivation.
 
 (** ========================================================================= *)
-(** PART XII: EXAMPLES                                                        *)
+(** PART XIII: EXAMPLES                                                       *)
 (** ========================================================================= *)
 
 Module Examples.
@@ -944,7 +893,7 @@ End Examples.
 Export Examples.
 
 (** ========================================================================= *)
-(** PART XIII: SYSTEM PROPERTIES                                              *)
+(** PART XIV: SYSTEM PROPERTIES                                               *)
 (** ========================================================================= *)
 
 Module Properties.
@@ -972,7 +921,7 @@ End Properties.
 Export Properties.
 
 (** ========================================================================= *)
-(** PART XIV: SERIALIZATION                                                   *)
+(** PART XV: SERIALIZATION                                                    *)
 (** Finite representation for replication/consensus.                          *)
 (** ========================================================================= *)
 
@@ -1069,8 +1018,10 @@ End Serialization.
 Export Serialization.
 
 (** ========================================================================= *)
-(** PART XIV-B: DESERIALIZATION                                               *)
+(** PART XVI: DESERIALIZATION                                                 *)
 (** Inverse of serialization with round-trip proofs.                          *)
+(** LIMITATION: Uses 255 as separator; nat fields must be < 255 for safety.   *)
+(** Future: length-prefix encoding for full nat range support.                *)
 (** ========================================================================= *)
 
 Module Deserialization.
@@ -1324,7 +1275,7 @@ End Deserialization.
 Export Deserialization.
 
 (** ========================================================================= *)
-(** PART XV: HASHING                                                          *)
+(** PART XVII: HASHING                                                        *)
 (** Deterministic hash for consensus/integrity.                               *)
 (** ========================================================================= *)
 
@@ -1353,7 +1304,7 @@ End Hashing.
 Export Hashing.
 
 (** ========================================================================= *)
-(** PART XVI: LEGAL DATABASE                                                  *)
+(** PART XVIII: LEGAL DATABASE                                                *)
 (** ========================================================================= *)
 
 Module LegalDatabase.
@@ -1387,9 +1338,7 @@ Module LegalDatabase.
   Lemma db_query_deterministic : forall db s,
     db_query db s = map (fun vh => (ch_id (vh_halakha vh), dt_eval (vh_audit vh) s)) db.
   Proof.
-    intros db s. unfold db_query.
-    apply map_ext. intro vh.
-    f_equal. apply vh_ruling_reproducible.
+    intros db s. reflexivity.
   Qed.
 
 End LegalDatabase.
@@ -1397,7 +1346,7 @@ End LegalDatabase.
 Export LegalDatabase.
 
 (** ========================================================================= *)
-(** PART XVII: EXTRACTION                                                     *)
+(** PART XIX: EXTRACTION                                                      *)
 (** ========================================================================= *)
 
 Require Import ExtrOcamlBasic.
