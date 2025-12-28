@@ -23,14 +23,12 @@
 (******************************************************************************)
 
 (** TODO:                                                                      *)
-(**   1. Implement per-middah child aggregation to replace universal OR.       *)
-(**   2. Decide and document semantics for identity middot (GS, DMI).          *)
-(**   3. Extend scope representation to handle negative derivations.           *)
-(**   4. Standardize byte-level encoding for cross-platform consensus.         *)
-(**   5. Implement deserialize_tree with round-trip correctness proof.         *)
-(**   6. Replace polynomial hash with cryptographic hash function.             *)
-(**   7. Add precedence rules for conflicting sources (stam vs yachid, rov).   *)
-(**   8. Implement conflict detection between contradictory halakhot.          *)
+(**   1. Extend scope representation to handle negative derivations.           *)
+(**   2. Standardize byte-level encoding for cross-platform consensus.         *)
+(**   3. Implement deserialize_tree with round-trip correctness proof.         *)
+(**   4. Replace polynomial hash with cryptographic hash function.             *)
+(**   5. Add precedence rules for conflicting sources (stam vs yachid, rov).   *)
+(**   6. Implement conflict detection between contradictory halakhot.          *)
 
 Require Import Coq.Lists.List.
 Require Import Coq.Arith.PeanoNat.
@@ -330,7 +328,8 @@ Module Certificates.
     gs_verse1 : VerseId;
     gs_verse2 : VerseId;
     gs_root : ShoreshId;
-    gs_mufneh : MufnehLevel
+    gs_mufneh : MufnehLevel;
+    gs_transfer : ScopePred
   }.
 
   Record BACert := mkBACert {
@@ -373,7 +372,8 @@ Module Certificates.
 
   Record DMICert := mkDMICert {
     dmi_verse : VerseId;
-    dmi_context_verse : VerseId
+    dmi_context_verse : VerseId;
+    dmi_context_restriction : ScopePred
   }.
 
   Record SKMCert := mkSKMCert {
@@ -472,14 +472,35 @@ Export DerivationTrees.
 
 Module Interpreter.
 
-  Definition child_scope (children : list DerivationTree) (eval : DerivationTree -> Subject -> bool) (s : Subject) : bool :=
+  Definition child_scope_or (children : list DerivationTree) (eval : DerivationTree -> Subject -> bool) (s : Subject) : bool :=
     existsb (fun t => eval t s) children.
+
+  Definition child_scope_and (children : list DerivationTree) (eval : DerivationTree -> Subject -> bool) (s : Subject) : bool :=
+    forallb (fun t => eval t s) children.
+
+  Definition child_scope_first (children : list DerivationTree) (eval : DerivationTree -> Subject -> bool) (s : Subject) : bool :=
+    match children with
+    | [] => false
+    | c :: _ => eval c s
+    end.
+
+  Definition middah_aggregation (m : Middah) : (list DerivationTree -> (DerivationTree -> Subject -> bool) -> Subject -> bool) :=
+    match m with
+    | ShneiKetuvimMakhchishim => child_scope_and
+    | KlalUFratUKlal => child_scope_and
+    | _ => child_scope_or
+    end.
 
   Fixpoint dt_eval (t : DerivationTree) (s : Subject) : bool :=
     match t with
     | DTLeaf _ pred => eval_pred pred s
     | DTNode m cert children =>
-        let base := child_scope children dt_eval s in
+        let base :=
+          match m with
+          | ShneiKetuvimMakhchishim => forallb (fun c => dt_eval c s) children
+          | KlalUFratUKlal => forallb (fun c => dt_eval c s) children
+          | _ => existsb (fun c => dt_eval c s) children
+          end in
         match cert with
         | CertKVC w =>
             let dayo_ok :=
@@ -493,8 +514,8 @@ Module Interpreter.
               | HasPirka refutation => negb (eval_pred refutation s)
               end in
             base || (same_category_b s (kvc_strict w) && stricter_b s (kvc_lenient w) && dayo_ok && pirka_ok)
-        | CertGS _ =>
-            base
+        | CertGS w =>
+            base || eval_pred (gs_transfer w) s
         | CertBA w =>
             base || similar_cases_b s (ba_paradigm w)
         | CertBA2 w =>
@@ -513,8 +534,8 @@ Module Interpreter.
             base && negb (eval_pred (dsh_exception w) s)
         | CertDYL w =>
             base && eval_pred (dyl_modifier w) s
-        | CertDMI _ =>
-            base
+        | CertDMI w =>
+            base && eval_pred (dmi_context_restriction w) s
         | CertSKM w =>
             base && eval_pred (skm_resolution w) s
         end
@@ -750,8 +771,8 @@ Module Transformers.
   Definition transform_ba (base : CompiledHalakha) (paradigm : Subject) (new_id : HalakhaId) : CompiledHalakha :=
     mkCompiledHalakha new_id (DTNode BinyanAvEchad (CertBA (mkBACert paradigm)) [ch_derivation base]).
 
-  Definition transform_dmi (base : CompiledHalakha) (verse context_verse : VerseId) (new_id : HalakhaId) : CompiledHalakha :=
-    mkCompiledHalakha new_id (DTNode DavarHaLamedMeInyano (CertDMI (mkDMICert verse context_verse)) [ch_derivation base]).
+  Definition transform_dmi (base : CompiledHalakha) (verse context_verse : VerseId) (context_restriction : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (DTNode DavarHaLamedMeInyano (CertDMI (mkDMICert verse context_verse context_restriction)) [ch_derivation base]).
 
   Definition transform_dyl (base : CompiledHalakha) (teaching_verse : VerseId) (modifier : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
     mkCompiledHalakha new_id (DTNode DavarYatzaLeLamed (CertDYL (mkDYLCert teaching_verse modifier)) [ch_derivation base]).
@@ -1020,7 +1041,8 @@ Module Serialization.
     end.
 
   Definition serialize_gs_cert (w : GSCert) : list nat :=
-    [gs_verse1 w; gs_verse2 w; gs_root w; mufneh_to_nat (gs_mufneh w)].
+    [gs_verse1 w; gs_verse2 w; gs_root w; mufneh_to_nat (gs_mufneh w)] ++
+    serialize_pred (gs_transfer w).
 
   Definition serialize_kuf_cert (w : KUFCert) : list nat :=
     [kuf_klal_verse w; kuf_prat_verse w] ++ serialize_pred (kuf_restriction w).
@@ -1068,7 +1090,8 @@ Module Serialization.
           | CertPTK w => serialize_puk_cert w
           | CertDSH w => serialize_dsh_cert w
           | CertDYL w => [dyl_teaching_verse w] ++ serialize_pred (dyl_modifier w)
-          | CertDMI w => [dmi_verse w; dmi_context_verse w]
+          | CertDMI w => [dmi_verse w; dmi_context_verse w] ++
+                         serialize_pred (dmi_context_restriction w)
           | CertSKM w => [skm_verse1 w; skm_verse2 w; skm_verse3 w] ++
                          serialize_pred (skm_resolution w)
           end in
