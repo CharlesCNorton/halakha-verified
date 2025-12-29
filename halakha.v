@@ -14,9 +14,6 @@
 (*                                                                            *)
 (******************************************************************************)
 
-(** TODO:                                                                      *)
-(**   1. Add precedence rules for conflicting sources (stam vs yachid, rov).   *)
-
 Require Import Coq.Lists.List.
 Require Import Coq.Arith.PeanoNat.
 Require Import Coq.Bool.Bool.
@@ -1932,7 +1929,151 @@ End Hashing.
 Export Hashing.
 
 (** ========================================================================= *)
-(** PART XVIII: LEGAL DATABASE                                                *)
+(** PART XVIII: PRECEDENCE AND CONFLICT RESOLUTION                            *)
+(** Halakhic rules for resolving contradictory sources.                       *)
+(** ========================================================================= *)
+
+Module Precedence.
+
+  Inductive SourceType : Type :=
+    | Stam : SourceType
+    | Yachid : nat -> SourceType
+    | Rov : SourceType
+    | Minhag : SourceType.
+
+  Inductive DerivationType : Type :=
+    | Explicit : DerivationType
+    | Derived : Middah -> DerivationType.
+
+  Inductive Era : Type :=
+    | Tannaitic : Era
+    | Amoraic : Era
+    | Gaonic : Era
+    | Rishonic : Era
+    | Acharonic : Era.
+
+  Record HalakhaProvenance := mkHalakhaProvenance {
+    hp_source : SourceType;
+    hp_derivation : DerivationType;
+    hp_era : Era;
+    hp_specificity : nat;
+    hp_stringency : nat
+  }.
+
+  Definition default_provenance : HalakhaProvenance :=
+    mkHalakhaProvenance Stam Explicit Tannaitic 0 0.
+
+  Definition source_weight (s : SourceType) : nat :=
+    match s with
+    | Rov => 4
+    | Stam => 3
+    | Yachid _ => 2
+    | Minhag => 1
+    end.
+
+  Definition derivation_weight (d : DerivationType) : nat :=
+    match d with
+    | Explicit => 2
+    | Derived _ => 1
+    end.
+
+  Definition era_weight (e : Era) : nat :=
+    match e with
+    | Tannaitic => 5
+    | Amoraic => 4
+    | Gaonic => 3
+    | Rishonic => 2
+    | Acharonic => 1
+    end.
+
+  Definition provenance_score (p : HalakhaProvenance) : nat :=
+    source_weight (hp_source p) * 100 +
+    derivation_weight (hp_derivation p) * 50 +
+    era_weight (hp_era p) * 10 +
+    hp_specificity p.
+
+  Definition provenance_compare (p1 p2 : HalakhaProvenance) : comparison :=
+    Nat.compare (provenance_score p1) (provenance_score p2).
+
+  Definition provenance_ge (p1 p2 : HalakhaProvenance) : bool :=
+    provenance_score p2 <=? provenance_score p1.
+
+  Record ProvenancedHalakha := mkProvenancedHalakha {
+    ph_halakha : CompiledHalakha;
+    ph_provenance : HalakhaProvenance
+  }.
+
+  Definition ph_applies (ph : ProvenancedHalakha) (s : Subject) : bool :=
+    ch_applies (ph_halakha ph) s.
+
+  Definition ph_polarity (ph : ProvenancedHalakha) : Polarity :=
+    ch_polarity (ph_halakha ph).
+
+  Definition ph_id (ph : ProvenancedHalakha) : HalakhaId :=
+    ch_id (ph_halakha ph).
+
+  Inductive Resolution : Type :=
+    | ResolveFirst : Resolution
+    | ResolveSecond : Resolution
+    | Unresolved : Resolution
+    | NoConflict : Resolution.
+
+  Definition resolve_by_provenance (p1 p2 : HalakhaProvenance) : Resolution :=
+    match provenance_compare p1 p2 with
+    | Gt => ResolveFirst
+    | Lt => ResolveSecond
+    | Eq => Unresolved
+    end.
+
+  Definition resolve_by_stringency (pol : Polarity) (p1 p2 : HalakhaProvenance) : Resolution :=
+    match pol with
+    | Negative =>
+        if hp_stringency p2 <? hp_stringency p1 then ResolveFirst
+        else if hp_stringency p1 <? hp_stringency p2 then ResolveSecond
+        else Unresolved
+    | Positive =>
+        Unresolved
+    end.
+
+  Definition resolve_by_specificity (p1 p2 : HalakhaProvenance) : Resolution :=
+    if hp_specificity p2 <? hp_specificity p1 then ResolveFirst
+    else if hp_specificity p1 <? hp_specificity p2 then ResolveSecond
+    else Unresolved.
+
+  Definition resolve_conflict (ph1 ph2 : ProvenancedHalakha) (s : Subject) : Resolution :=
+    let applies1 := ph_applies ph1 s in
+    let applies2 := ph_applies ph2 s in
+    let pol1 := ph_polarity ph1 in
+    let pol2 := ph_polarity ph2 in
+    if negb applies1 || negb applies2 then NoConflict
+    else if polarity_eqb pol1 pol2 then NoConflict
+    else
+      let p1 := ph_provenance ph1 in
+      let p2 := ph_provenance ph2 in
+      match resolve_by_specificity p1 p2 with
+      | Unresolved =>
+          match resolve_by_provenance p1 p2 with
+          | Unresolved =>
+              resolve_by_stringency pol1 p1 p2
+          | r => r
+          end
+      | r => r
+      end.
+
+  Definition resolution_winner (r : Resolution) (id1 id2 : HalakhaId) : option HalakhaId :=
+    match r with
+    | ResolveFirst => Some id1
+    | ResolveSecond => Some id2
+    | Unresolved => None
+    | NoConflict => None
+    end.
+
+End Precedence.
+
+Export Precedence.
+
+(** ========================================================================= *)
+(** PART XIX: LEGAL DATABASE                                                  *)
 (** ========================================================================= *)
 
 Module LegalDatabase.
@@ -1993,6 +2134,68 @@ Module LegalDatabase.
   Definition db_consistent (db : HalakhaDB) (subjects : list Subject) : bool :=
     forallb (fun s => match db_find_conflicts db s with [] => true | _ => false end) subjects.
 
+  Definition ProvenancedDB := list ProvenancedHalakha.
+
+  Definition pdb_applicable (db : ProvenancedDB) (s : Subject) : list ProvenancedHalakha :=
+    filter (fun ph => ph_applies ph s) db.
+
+  Definition pdb_find_conflicts (db : ProvenancedDB) (s : Subject) : list (HalakhaId * HalakhaId * Resolution) :=
+    let applicable := pdb_applicable db s in
+    flat_map (fun ph1 =>
+      flat_map (fun ph2 =>
+        if ph_id ph1 <? ph_id ph2 then
+          let r := resolve_conflict ph1 ph2 s in
+          match r with
+          | NoConflict => []
+          | _ => [(ph_id ph1, ph_id ph2, r)]
+          end
+        else []
+      ) applicable
+    ) applicable.
+
+  Definition pdb_unresolved (db : ProvenancedDB) (s : Subject) : list (HalakhaId * HalakhaId) :=
+    flat_map (fun triple =>
+      match triple with
+      | (id1, id2, Unresolved) => [(id1, id2)]
+      | _ => []
+      end
+    ) (pdb_find_conflicts db s).
+
+  Definition pdb_resolved (db : ProvenancedDB) (s : Subject) : list (HalakhaId * HalakhaId * HalakhaId) :=
+    flat_map (fun triple =>
+      match triple with
+      | (id1, id2, ResolveFirst) => [(id1, id2, id1)]
+      | (id1, id2, ResolveSecond) => [(id1, id2, id2)]
+      | _ => []
+      end
+    ) (pdb_find_conflicts db s).
+
+  Definition pdb_effective_ruling (db : ProvenancedDB) (s : Subject) : option Polarity :=
+    let applicable := pdb_applicable db s in
+    match applicable with
+    | [] => None
+    | [ph] => Some (ph_polarity ph)
+    | ph1 :: ph2 :: _ =>
+        if polarity_eqb (ph_polarity ph1) (ph_polarity ph2) then
+          Some (ph_polarity ph1)
+        else
+          match resolve_conflict ph1 ph2 s with
+          | ResolveFirst => Some (ph_polarity ph1)
+          | ResolveSecond => Some (ph_polarity ph2)
+          | _ => None
+          end
+    end.
+
+  Lemma pdb_no_unresolved_consistent : forall db subjects,
+    forallb (fun s => match pdb_unresolved db s with [] => true | _ => false end) subjects = true ->
+    forall s, In s subjects -> pdb_unresolved db s = [].
+  Proof.
+    intros db subjects Hforall s Hin.
+    rewrite forallb_forall in Hforall.
+    specialize (Hforall s Hin).
+    destruct (pdb_unresolved db s); [reflexivity | discriminate].
+  Qed.
+
 End LegalDatabase.
 
 Export LegalDatabase.
@@ -2025,6 +2228,14 @@ Extract Inductive PirkaStatus => "pirka_status" ["NoPirka" "HasPirka"].
 Extract Inductive MufnehLevel => "mufneh_level" ["MufnehNone" "MufnehOne" "MufnehBoth"].
 
 Extract Inductive Polarity => "polarity" ["Positive" "Negative"].
+
+Extract Inductive SourceType => "source_type" ["Stam" "Yachid" "Rov" "Minhag"].
+
+Extract Inductive DerivationType => "derivation_type" ["Explicit" "Derived"].
+
+Extract Inductive Era => "era" ["Tannaitic" "Amoraic" "Gaonic" "Rishonic" "Acharonic"].
+
+Extract Inductive Resolution => "resolution" ["ResolveFirst" "ResolveSecond" "Unresolved" "NoConflict"].
 
 (** OCaml validation wrapper.
     In extracted OCaml code, use safe_eval_halakha to ensure validation before evaluation.
