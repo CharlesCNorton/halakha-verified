@@ -17,6 +17,8 @@
 Require Import Coq.Lists.List.
 Require Import Coq.Arith.PeanoNat.
 Require Import Coq.Bool.Bool.
+Require Import Coq.PArith.BinPos.
+Require Import Coq.PArith.Pnat.
 Require Import Lia.
 Import ListNotations.
 
@@ -26,16 +28,14 @@ Import ListNotations.
 
 Module Primitives.
 
-  Definition SubjectId := nat.
+  Definition SubjectId := positive.
   Definition VerseId := nat.
   Definition HalakhaId := nat.
   Definition ShoreshId := nat.
   Definition CategoryId := nat.
 
-  Definition reserved_subject_id : SubjectId := 0.
-
-  Definition valid_subject_id (id : SubjectId) : bool :=
-    negb (id =? reserved_subject_id).
+  Definition subjectid_eqb (id1 id2 : SubjectId) : bool :=
+    Pos.eqb id1 id2.
 
   Definition TimeContext := nat.
   Definition time_any : TimeContext := 0.
@@ -54,7 +54,7 @@ Module Primitives.
   }.
 
   Definition subject_eqb (s1 s2 : Subject) : bool :=
-    (subj_id s1 =? subj_id s2) &&
+    subjectid_eqb (subj_id s1) (subj_id s2) &&
     (subj_case_severity s1 =? subj_case_severity s2) &&
     (subj_obligation_strength s1 =? subj_obligation_strength s2) &&
     (subj_category s1 =? subj_category s2) &&
@@ -73,8 +73,8 @@ Module Primitives.
   Lemma subject_eqb_eq : forall s1 s2, subject_eqb s1 s2 = true <-> s1 = s2.
   Proof.
     intros [id1 csev1 osev1 cat1 t1] [id2 csev2 osev2 cat2 t2].
-    unfold subject_eqb. simpl.
-    rewrite !Bool.andb_true_iff, !Nat.eqb_eq.
+    unfold subject_eqb, subjectid_eqb. simpl.
+    rewrite !Bool.andb_true_iff, !Nat.eqb_eq, Pos.eqb_eq.
     split.
     - intros [[[[Hid Hcsev] Hosev] Hcat] Ht]. congruence.
     - intro H. inversion H. auto.
@@ -111,7 +111,7 @@ Module ScopeDSL.
     match p with
     | PredTrue => true
     | PredFalse => false
-    | PredIdEq id => subj_id s =? id
+    | PredIdEq id => subjectid_eqb (subj_id s) id
     | PredCategoryEq cat => subj_category s =? cat
     | PredSeverityGe n => n <=? subj_case_severity s
     | PredSeverityLe n => subj_case_severity s <=? n
@@ -129,7 +129,7 @@ Module ScopeDSL.
     match p1, p2 with
     | PredTrue, PredTrue => true
     | PredFalse, PredFalse => true
-    | PredIdEq id1, PredIdEq id2 => id1 =? id2
+    | PredIdEq id1, PredIdEq id2 => subjectid_eqb id1 id2
     | PredCategoryEq c1, PredCategoryEq c2 => c1 =? c2
     | PredSeverityGe n1, PredSeverityGe n2 => n1 =? n2
     | PredSeverityLe n1, PredSeverityLe n2 => n1 =? n2
@@ -148,6 +148,8 @@ Module ScopeDSL.
   Proof.
     induction p1; destruct p2; simpl; split; intro H;
     try discriminate; try reflexivity;
+    try (unfold subjectid_eqb in H; rewrite Pos.eqb_eq in H; congruence);
+    try (unfold subjectid_eqb; rewrite Pos.eqb_eq; congruence);
     try (rewrite Nat.eqb_eq in H; congruence);
     try (rewrite Nat.eqb_eq; congruence);
     try (rewrite subject_eqb_eq in H; congruence);
@@ -684,12 +686,10 @@ Module Validity.
     negb (pred_trivially_true np) && negb (pred_trivially_false np).
 
   Definition valid_ba (w : BACert) : bool :=
-    valid_subject_id (subj_id (ba_paradigm w)).
+    true.
 
   Definition valid_ba2 (w : BA2Cert) : bool :=
-    valid_subject_id (subj_id (ba2_paradigm1 w)) &&
-    valid_subject_id (subj_id (ba2_paradigm2 w)) &&
-    negb (subj_id (ba2_paradigm1 w) =? subj_id (ba2_paradigm2 w)) &&
+    negb (subjectid_eqb (subj_id (ba2_paradigm1 w)) (subj_id (ba2_paradigm2 w))) &&
     (subj_category (ba2_paradigm1 w) =? ba2_common_category w) &&
     (subj_category (ba2_paradigm2 w) =? ba2_common_category w).
 
@@ -992,7 +992,6 @@ Module ValidatedTransformers.
     (vh : ValidatedHalakha)
     (paradigm : Subject)
     (new_id : HalakhaId)
-    (Hvalid : valid_ba (mkBACert paradigm) = true)
     : ValidatedHalakha.
   Proof.
     refine (mkValidatedHalakha
@@ -1000,7 +999,6 @@ Module ValidatedTransformers.
       (vh_context vh)
       _).
     simpl.
-    rewrite Hvalid. simpl.
     rewrite (vh_valid vh). reflexivity.
   Defined.
 
@@ -1046,9 +1044,9 @@ Export BaseDerivation.
 
 Module Examples.
 
-  Definition subj_shabbat : Subject := mkSubject 1 10 10 1 time_shabbat.
-  Definition subj_yom_tov : Subject := mkSubject 2 5 5 1 time_yom_tov.
-  Definition subj_chol : Subject := mkSubject 3 1 1 1 time_weekday.
+  Definition subj_shabbat : Subject := mkSubject 1%positive 10 10 1 time_shabbat.
+  Definition subj_yom_tov : Subject := mkSubject 2%positive 5 5 1 time_yom_tov.
+  Definition subj_chol : Subject := mkSubject 3%positive 1 1 1 time_weekday.
 
   Definition scope_melacha : ScopePred :=
     PredAnd (PredCategoryEq 1) (PredSeverityGe 5).
@@ -1161,22 +1159,22 @@ Module Serialization.
     match p with
     | PredTrue => [0]
     | PredFalse => [1]
-    | PredIdEq id => [2; id]
+    | PredIdEq id => [2; Pos.to_nat id]
     | PredCategoryEq cat => [3; cat]
     | PredSeverityGe n => [4; n]
     | PredSeverityLe n => [5; n]
     | PredSeverityEq n => [6; n]
     | PredTimeEq t => [7; t]
-    | PredSimilarTo s => [8; subj_id s; subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s]
-    | PredStricterThan s => [9; subj_id s; subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s]
-    | PredSameCategory s => [10; subj_id s; subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s]
+    | PredSimilarTo s => [8; Pos.to_nat (subj_id s); subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s]
+    | PredStricterThan s => [9; Pos.to_nat (subj_id s); subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s]
+    | PredSameCategory s => [10; Pos.to_nat (subj_id s); subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s]
     | PredAnd p1 p2 => [11] ++ serialize_pred p1 ++ [255] ++ serialize_pred p2
     | PredOr p1 p2 => [12] ++ serialize_pred p1 ++ [255] ++ serialize_pred p2
     | PredNot p1 => [13] ++ serialize_pred p1
     end.
 
   Definition serialize_subject (s : Subject) : list nat :=
-    [subj_id s; subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s].
+    [Pos.to_nat (subj_id s); subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s].
 
   Definition serialize_pirka (p : PirkaStatus) : list nat :=
     match p with
@@ -1349,7 +1347,11 @@ Module Deserialization.
 
   Definition deserialize_subject (l : list nat) : ParseResult Subject :=
     match l with
-    | id :: csev :: osev :: cat :: t :: rest => Some (mkSubject id csev osev cat t, rest)
+    | id :: csev :: osev :: cat :: t :: rest =>
+        match id with
+        | 0 => None
+        | S n => Some (mkSubject (Pos.of_succ_nat n) csev osev cat t, rest)
+        end
     | _ => None
     end.
 
@@ -1373,18 +1375,31 @@ Module Deserialization.
         match l with
         | 0 :: rest => Some (PredTrue, rest)
         | 1 :: rest => Some (PredFalse, rest)
-        | 2 :: id :: rest => Some (PredIdEq id, rest)
+        | 2 :: id :: rest =>
+            match id with
+            | 0 => None
+            | S n => Some (PredIdEq (Pos.of_succ_nat n), rest)
+            end
         | 3 :: cat :: rest => Some (PredCategoryEq cat, rest)
         | 4 :: n :: rest => Some (PredSeverityGe n, rest)
         | 5 :: n :: rest => Some (PredSeverityLe n, rest)
         | 6 :: n :: rest => Some (PredSeverityEq n, rest)
         | 7 :: t :: rest => Some (PredTimeEq t, rest)
         | 8 :: id :: csev :: osev :: cat :: t :: rest =>
-            Some (PredSimilarTo (mkSubject id csev osev cat t), rest)
+            match id with
+            | 0 => None
+            | S n => Some (PredSimilarTo (mkSubject (Pos.of_succ_nat n) csev osev cat t), rest)
+            end
         | 9 :: id :: csev :: osev :: cat :: t :: rest =>
-            Some (PredStricterThan (mkSubject id csev osev cat t), rest)
+            match id with
+            | 0 => None
+            | S n => Some (PredStricterThan (mkSubject (Pos.of_succ_nat n) csev osev cat t), rest)
+            end
         | 10 :: id :: csev :: osev :: cat :: t :: rest =>
-            Some (PredSameCategory (mkSubject id csev osev cat t), rest)
+            match id with
+            | 0 => None
+            | S n => Some (PredSameCategory (mkSubject (Pos.of_succ_nat n) csev osev cat t), rest)
+            end
         | 11 :: rest =>
             match deserialize_pred_aux fuel' rest with
             | Some (p1, r1) =>
@@ -1605,7 +1620,19 @@ Module Deserialization.
     destruct x as [|[|[|[|[|[|[|[|[|[|[|[|[|[|n]]]]]]]]]]]]]].
     all: try reflexivity.
     all: try (cbn -[deserialize_pred_aux]; destruct xs; [exact I|reflexivity]).
+    - cbn -[deserialize_pred_aux].
+      destruct xs as [|id rest]; [exact I|].
+      destruct id; [exact I|reflexivity].
     all: try (cbn -[deserialize_pred_aux]; destruct xs as [|? [|? [|? [|? [|? ?]]]]]; try exact I; reflexivity).
+    - cbn -[deserialize_pred_aux].
+      destruct xs as [|id [|? [|? [|? [|? rest]]]]]; try exact I.
+      destruct id; [exact I|reflexivity].
+    - cbn -[deserialize_pred_aux].
+      destruct xs as [|id [|? [|? [|? [|? rest]]]]]; try exact I.
+      destruct id; [exact I|reflexivity].
+    - cbn -[deserialize_pred_aux].
+      destruct xs as [|id [|? [|? [|? [|? rest]]]]]; try exact I.
+      destruct id; [exact I|reflexivity].
     - pose proof (IH xs) as IHxs.
       simpl.
       destruct (deserialize_pred_aux fuel xs) as [[p1 r1]|] eqn:E1; [|exact I].
@@ -1693,9 +1720,23 @@ Module Deserialization.
     deserialize_pred_aux (serialize_pred_length p) (serialize_pred p ++ rest) = Some (p, rest).
   Proof.
     induction p; intros rest; simpl; try reflexivity.
-    - destruct s as [id sev cat t]. reflexivity.
-    - destruct s as [id sev cat t]. reflexivity.
-    - destruct s as [id sev cat t]. reflexivity.
+    - unfold serialize_pred_length, serialize_pred.
+      simpl.
+      destruct (Pos.to_nat s) as [|n] eqn:Heq.
+      + exfalso. pose proof (Pos2Nat.is_pos s) as Hpos. lia.
+      + rewrite Pos.of_nat_succ, <- Heq, Pos2Nat.id. reflexivity.
+    - destruct s as [id csev osev cat t]. simpl.
+      destruct (Pos.to_nat id) as [|n] eqn:Heq.
+      + exfalso. pose proof (Pos2Nat.is_pos id) as Hpos. lia.
+      + rewrite Pos.of_nat_succ, <- Heq, Pos2Nat.id. reflexivity.
+    - destruct s as [id csev osev cat t]. simpl.
+      destruct (Pos.to_nat id) as [|n] eqn:Heq.
+      + exfalso. pose proof (Pos2Nat.is_pos id) as Hpos. lia.
+      + rewrite Pos.of_nat_succ, <- Heq, Pos2Nat.id. reflexivity.
+    - destruct s as [id csev osev cat t]. simpl.
+      destruct (Pos.to_nat id) as [|n] eqn:Heq.
+      + exfalso. pose proof (Pos2Nat.is_pos id) as Hpos. lia.
+      + rewrite Pos.of_nat_succ, <- Heq, Pos2Nat.id. reflexivity.
     - rewrite <- app_assoc. simpl.
       assert (H1 : deserialize_pred_aux (serialize_pred_length p1 + 1 + serialize_pred_length p2)
                      (serialize_pred p1 ++ 255 :: serialize_pred p2 ++ rest) = Some (p1, 255 :: serialize_pred p2 ++ rest)).
@@ -1732,7 +1773,11 @@ Module Deserialization.
   Lemma serialize_subject_roundtrip : forall s,
     deserialize_subject (serialize_subject s) = Some (s, []).
   Proof.
-    intro s. destruct s as [id csev osev cat t]. reflexivity.
+    intro s. destruct s as [id csev osev cat t].
+    unfold serialize_subject, deserialize_subject. simpl.
+    destruct (Pos.to_nat id) as [|n] eqn:Heq.
+    - exfalso. pose proof (Pos2Nat.is_pos id) as Hpos. lia.
+    - rewrite Pos.of_nat_succ, <- Heq, Pos2Nat.id. reflexivity.
   Qed.
 
   Lemma firstn_app_skipn : forall n (l : list nat),
