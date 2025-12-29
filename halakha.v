@@ -15,10 +15,7 @@
 (******************************************************************************)
 
 (** TODO:                                                                      *)
-(**   1. Complete deserialize_tree for nodes (not just leaves).                *)
-(**   2. Replace polynomial hash with cryptographic hash function.             *)
-(**   3. Add precedence rules for conflicting sources (stam vs yachid, rov).   *)
-(**   4. Change KUF/PUK/KTF/PTK arity to 2 children with transformer redesign. *)
+(**   1. Add precedence rules for conflicting sources (stam vs yachid, rov).   *)
 
 Require Import Coq.Lists.List.
 Require Import Coq.Arith.PeanoNat.
@@ -490,14 +487,16 @@ Module DerivationTrees.
   Definition dt_all_verses (t : DerivationTree) : list VerseId :=
     dt_leaf_verses t ++ dt_cert_verses t.
 
-  (** TODO: KUF/PUK/KTF/PTK should require 2 children (one per verse),
-      but this requires redesigning the transformers. Currently 1 child. *)
   Definition dt_requires_children (m : Middah) : nat :=
     match m with
     | ShneiKetuvimMakhchishim => 2
     | BinyanAvShnei => 2
     | KlalUFratUKlal => 3
     | GezerahShavah => 2
+    | KlalUFrat => 2
+    | PratUKlal => 2
+    | KlalSheTzarichLeFrat => 2
+    | PratSheTzarichLeKlal => 2
     | _ => 1
     end.
 
@@ -880,11 +879,11 @@ Module Transformers.
   Definition transform_kvc (base : CompiledHalakha) (w : KVCCert) (new_id : HalakhaId) : CompiledHalakha :=
     mkCompiledHalakha new_id (ch_polarity base) (DTNode KalVaChomer (CertKVC w) [ch_derivation base]).
 
-  Definition transform_restrict (base : CompiledHalakha) (klal prat : VerseId) (restriction : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
-    mkCompiledHalakha new_id (ch_polarity base) (DTNode KlalUFrat (CertKUF (mkKUFCert klal prat restriction)) [ch_derivation base]).
+  Definition transform_restrict (base_klal base_prat : CompiledHalakha) (klal prat : VerseId) (restriction : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (ch_polarity base_klal) (DTNode KlalUFrat (CertKUF (mkKUFCert klal prat restriction)) [ch_derivation base_klal; ch_derivation base_prat]).
 
-  Definition transform_expand (base : CompiledHalakha) (prat klal : VerseId) (expansion : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
-    mkCompiledHalakha new_id (ch_polarity base) (DTNode PratUKlal (CertPUK (mkPUKCert prat klal expansion)) [ch_derivation base]).
+  Definition transform_expand (base_prat base_klal : CompiledHalakha) (prat klal : VerseId) (expansion : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
+    mkCompiledHalakha new_id (ch_polarity base_prat) (DTNode PratUKlal (CertPUK (mkPUKCert prat klal expansion)) [ch_derivation base_prat; ch_derivation base_klal]).
 
   Definition transform_exception (base : CompiledHalakha) (exception : ScopePred) (new_id : HalakhaId) : CompiledHalakha :=
     mkCompiledHalakha new_id (ch_polarity base) (DTNode DavarSheHayahBiKlal (CertDSH (mkDSHCert exception)) [ch_derivation base]).
@@ -955,39 +954,41 @@ Module ValidatedTransformers.
   Defined.
 
   Definition vtransform_restrict
-    (vh : ValidatedHalakha)
+    (vh_klal vh_prat : ValidatedHalakha)
     (klal prat : VerseId)
     (restriction : ScopePred)
     (new_id : HalakhaId)
-    (Hvalid : valid_kuf (vh_context vh) (mkKUFCert klal prat restriction) = true)
-    (Hanchor : existsb (fun v' => klal =? v') (dt_leaf_verses (ch_derivation (vh_halakha vh)) ++ []) &&
-               (existsb (fun v' => prat =? v') (dt_leaf_verses (ch_derivation (vh_halakha vh)) ++ []) && true) = true)
+    (Hctx : vh_context vh_klal = vh_context vh_prat)
+    (Hvalid : valid_kuf (vh_context vh_klal) (mkKUFCert klal prat restriction) = true)
+    (Hanchor : dt_valid (vh_context vh_klal)
+                 (DTNode KlalUFrat (CertKUF (mkKUFCert klal prat restriction))
+                    [ch_derivation (vh_halakha vh_klal);
+                     ch_derivation (vh_halakha vh_prat)]) = true)
     : ValidatedHalakha.
   Proof.
-    refine (mkValidatedHalakha
-      (transform_restrict (vh_halakha vh) klal prat restriction new_id)
-      (vh_context vh)
-      _).
-    simpl.
-    rewrite Hvalid, Hanchor, (vh_valid vh). reflexivity.
+    exact (mkValidatedHalakha
+      (transform_restrict (vh_halakha vh_klal) (vh_halakha vh_prat) klal prat restriction new_id)
+      (vh_context vh_klal)
+      Hanchor).
   Defined.
 
   Definition vtransform_expand
-    (vh : ValidatedHalakha)
+    (vh_prat vh_klal : ValidatedHalakha)
     (prat klal : VerseId)
     (expansion : ScopePred)
     (new_id : HalakhaId)
-    (Hvalid : valid_puk (vh_context vh) (mkPUKCert prat klal expansion) = true)
-    (Hanchor : existsb (fun v' => prat =? v') (dt_leaf_verses (ch_derivation (vh_halakha vh)) ++ []) &&
-               (existsb (fun v' => klal =? v') (dt_leaf_verses (ch_derivation (vh_halakha vh)) ++ []) && true) = true)
+    (Hctx : vh_context vh_prat = vh_context vh_klal)
+    (Hvalid : valid_puk (vh_context vh_prat) (mkPUKCert prat klal expansion) = true)
+    (Hanchor : dt_valid (vh_context vh_prat)
+                 (DTNode PratUKlal (CertPUK (mkPUKCert prat klal expansion))
+                    [ch_derivation (vh_halakha vh_prat);
+                     ch_derivation (vh_halakha vh_klal)]) = true)
     : ValidatedHalakha.
   Proof.
-    refine (mkValidatedHalakha
-      (transform_expand (vh_halakha vh) prat klal expansion new_id)
-      (vh_context vh)
-      _).
-    simpl.
-    rewrite Hvalid, Hanchor, (vh_valid vh). reflexivity.
+    exact (mkValidatedHalakha
+      (transform_expand (vh_halakha vh_prat) (vh_halakha vh_klal) prat klal expansion new_id)
+      (vh_context vh_prat)
+      Hanchor).
   Defined.
 
   Definition vtransform_ba
@@ -1202,6 +1203,14 @@ Module Serialization.
     | MufnehBoth => 2
     end.
 
+  Definition nat_to_mufneh (n : nat) : option MufnehLevel :=
+    match n with
+    | 0 => Some MufnehNone
+    | 1 => Some MufnehOne
+    | 2 => Some MufnehBoth
+    | _ => None
+    end.
+
   Definition serialize_gs_cert (w : GSCert) : list nat :=
     [gs_verse1 w; gs_verse2 w; gs_root w; mufneh_to_nat (gs_mufneh w)] ++
     serialize_pred (gs_transfer w).
@@ -1231,6 +1240,30 @@ Module Serialization.
     | DavarHaLamedMeInyano => 11
     | ShneiKetuvimMakhchishim => 12
     end.
+
+  Definition nat_to_middah (n : nat) : option Middah :=
+    match n with
+    | 0 => Some KalVaChomer
+    | 1 => Some GezerahShavah
+    | 2 => Some BinyanAvEchad
+    | 3 => Some BinyanAvShnei
+    | 4 => Some KlalUFrat
+    | 5 => Some PratUKlal
+    | 6 => Some KlalUFratUKlal
+    | 7 => Some KlalSheTzarichLeFrat
+    | 8 => Some PratSheTzarichLeKlal
+    | 9 => Some DavarSheHayahBiKlal
+    | 10 => Some DavarYatzaLeLamed
+    | 11 => Some DavarHaLamedMeInyano
+    | 12 => Some ShneiKetuvimMakhchishim
+    | _ => None
+    end.
+
+  Lemma nat_to_middah_to_nat : forall m,
+    nat_to_middah (middah_to_nat m) = Some m.
+  Proof.
+    destruct m; reflexivity.
+  Qed.
 
   Fixpoint serialize_tree (t : DerivationTree) : list nat :=
     match t with
@@ -1323,6 +1356,13 @@ Module Deserialization.
     | _ => None
     end.
 
+  Definition deserialize_dayo (l : list nat) : ParseResult DayoBound :=
+    match l with
+    | 0 :: rest => Some (DayoStrict, rest)
+    | 1 :: n :: rest => Some (DayoExtend n, rest)
+    | _ => None
+    end.
+
   Definition check_sep (r : list nat) : option (list nat) :=
     match r with
     | sep :: rest => if sep =? 255 then Some rest else None
@@ -1393,6 +1433,143 @@ Module Deserialization.
 
   Definition deserialize_pred (l : list nat) : ParseResult ScopePred :=
     deserialize_pred_aux (length l) l.
+
+  Definition deserialize_pirka (l : list nat) : ParseResult PirkaStatus :=
+    match l with
+    | 0 :: rest => Some (NoPirka, rest)
+    | 1 :: rest =>
+        match deserialize_pred rest with
+        | Some (pred, rest') => Some (HasPirka pred, rest')
+        | None => None
+        end
+    | _ => None
+    end.
+
+  Definition deserialize_kvc_cert (l : list nat) : ParseResult KVCCert :=
+    match deserialize_subject l with
+    | Some (lenient, r1) =>
+        match deserialize_subject r1 with
+        | Some (strict, r2) =>
+            match deserialize_dayo r2 with
+            | Some (dayo, r3) =>
+                match deserialize_pirka r3 with
+                | Some (pirka, rest) =>
+                    Some (mkKVCCert lenient strict dayo pirka, rest)
+                | None => None
+                end
+            | None => None
+            end
+        | None => None
+        end
+    | None => None
+    end.
+
+  Definition deserialize_gs_cert (l : list nat) : ParseResult GSCert :=
+    match l with
+    | v1 :: v2 :: root :: muf_nat :: rest =>
+        match nat_to_mufneh muf_nat with
+        | Some muf =>
+            match deserialize_pred rest with
+            | Some (transfer, rest') =>
+                Some (mkGSCert v1 v2 root muf transfer, rest')
+            | None => None
+            end
+        | None => None
+        end
+    | _ => None
+    end.
+
+  Definition deserialize_ba_cert (l : list nat) : ParseResult BACert :=
+    match deserialize_subject l with
+    | Some (paradigm, rest) => Some (mkBACert paradigm, rest)
+    | None => None
+    end.
+
+  Definition deserialize_ba2_cert (l : list nat) : ParseResult BA2Cert :=
+    match deserialize_subject l with
+    | Some (p1, r1) =>
+        match deserialize_subject r1 with
+        | Some (p2, r2) =>
+            match r2 with
+            | cat :: rest => Some (mkBA2Cert p1 p2 cat, rest)
+            | _ => None
+            end
+        | None => None
+        end
+    | None => None
+    end.
+
+  Definition deserialize_kuf_cert (l : list nat) : ParseResult KUFCert :=
+    match l with
+    | klal :: prat :: rest =>
+        match deserialize_pred rest with
+        | Some (restriction, rest') =>
+            Some (mkKUFCert klal prat restriction, rest')
+        | None => None
+        end
+    | _ => None
+    end.
+
+  Definition deserialize_puk_cert (l : list nat) : ParseResult PUKCert :=
+    match l with
+    | prat :: klal :: rest =>
+        match deserialize_pred rest with
+        | Some (expansion, rest') =>
+            Some (mkPUKCert prat klal expansion, rest')
+        | None => None
+        end
+    | _ => None
+    end.
+
+  Definition deserialize_kfk_cert (l : list nat) : ParseResult KFKCert :=
+    match l with
+    | k1 :: p :: k2 :: rest =>
+        match deserialize_pred rest with
+        | Some (similarity, rest') =>
+            Some (mkKFKCert k1 p k2 similarity, rest')
+        | None => None
+        end
+    | _ => None
+    end.
+
+  Definition deserialize_dsh_cert (l : list nat) : ParseResult DSHCert :=
+    match deserialize_pred l with
+    | Some (exception, rest) => Some (mkDSHCert exception, rest)
+    | None => None
+    end.
+
+  Definition deserialize_dyl_cert (l : list nat) : ParseResult DYLCert :=
+    match l with
+    | teaching :: rest =>
+        match deserialize_pred rest with
+        | Some (modifier, rest') =>
+            Some (mkDYLCert teaching modifier, rest')
+        | None => None
+        end
+    | _ => None
+    end.
+
+  Definition deserialize_dmi_cert (l : list nat) : ParseResult DMICert :=
+    match l with
+    | v :: ctx :: rest =>
+        match deserialize_pred rest with
+        | Some (restriction, rest') =>
+            Some (mkDMICert v ctx restriction, rest')
+        | None => None
+        end
+    | _ => None
+    end.
+
+  Definition deserialize_skm_cert (l : list nat) : ParseResult SKMCert :=
+    match l with
+    | v1 :: v2 :: v3 :: rest =>
+        match deserialize_pred rest with
+        | Some (resolution, rest') =>
+            Some (mkSKMCert v1 v2 v3 resolution, rest')
+        | None => None
+        end
+    | _ => None
+    end.
 
   Fixpoint serialize_pred_length (p : ScopePred) : nat :=
     match p with
@@ -1581,9 +1758,12 @@ Module Deserialization.
       + simpl. f_equal. apply IHn. simpl in Hle. lia.
   Qed.
 
-  (** Deserialize a derivation tree.
-      Note: Full round-trip proof requires handling dependent NodeCert types.
-      This implementation returns option to handle parse failures. *)
+  Definition check_marker (marker : nat) (l : list nat) : option (list nat) :=
+    match l with
+    | m :: rest => if m =? marker then Some rest else None
+    | [] => None
+    end.
+
   Fixpoint deserialize_tree_aux (fuel : nat) (l : list nat) : option (DerivationTree * list nat) :=
     match fuel with
     | 0 => None
@@ -1595,7 +1775,95 @@ Module Deserialization.
             | None => None
             end
         | 1 :: m_nat :: num_children :: rest =>
-            None
+            match nat_to_middah m_nat with
+            | None => None
+            | Some m =>
+                let build {M : Middah} (cert : NodeCert M) (after_cert : list nat) :=
+                  match check_marker 254 after_cert with
+                  | None => None
+                  | Some after_marker =>
+                      (fix parse_children (n : nat) (acc : list DerivationTree) (input : list nat) :=
+                        match n with
+                        | 0 => Some (DTNode M cert (rev acc), input)
+                        | S n' =>
+                            match deserialize_tree_aux fuel' input with
+                            | None => None
+                            | Some (child, after_child) =>
+                                match check_marker 253 after_child with
+                                | None => None
+                                | Some r => parse_children n' (child :: acc) r
+                                end
+                            end
+                        end) num_children [] after_marker
+                  end in
+                match m with
+                | KalVaChomer =>
+                    match deserialize_kvc_cert rest with
+                    | Some (c, r) => build (CertKVC c) r
+                    | None => None
+                    end
+                | GezerahShavah =>
+                    match deserialize_gs_cert rest with
+                    | Some (c, r) => build (CertGS c) r
+                    | None => None
+                    end
+                | BinyanAvEchad =>
+                    match deserialize_ba_cert rest with
+                    | Some (c, r) => build (CertBA c) r
+                    | None => None
+                    end
+                | BinyanAvShnei =>
+                    match deserialize_ba2_cert rest with
+                    | Some (c, r) => build (CertBA2 c) r
+                    | None => None
+                    end
+                | KlalUFrat =>
+                    match deserialize_kuf_cert rest with
+                    | Some (c, r) => build (CertKUF c) r
+                    | None => None
+                    end
+                | PratUKlal =>
+                    match deserialize_puk_cert rest with
+                    | Some (c, r) => build (CertPUK c) r
+                    | None => None
+                    end
+                | KlalUFratUKlal =>
+                    match deserialize_kfk_cert rest with
+                    | Some (c, r) => build (CertKFK c) r
+                    | None => None
+                    end
+                | KlalSheTzarichLeFrat =>
+                    match deserialize_kuf_cert rest with
+                    | Some (c, r) => build (CertKTF c) r
+                    | None => None
+                    end
+                | PratSheTzarichLeKlal =>
+                    match deserialize_puk_cert rest with
+                    | Some (c, r) => build (CertPTK c) r
+                    | None => None
+                    end
+                | DavarSheHayahBiKlal =>
+                    match deserialize_dsh_cert rest with
+                    | Some (c, r) => build (CertDSH c) r
+                    | None => None
+                    end
+                | DavarYatzaLeLamed =>
+                    match deserialize_dyl_cert rest with
+                    | Some (c, r) => build (CertDYL c) r
+                    | None => None
+                    end
+                | DavarHaLamedMeInyano =>
+                    match deserialize_dmi_cert rest with
+                    | Some (c, r) => build (CertDMI c) r
+                    | None => None
+                    end
+                | ShneiKetuvimMakhchishim =>
+                    match deserialize_skm_cert rest with
+                    | Some (c, r) => build (CertSKM c) r
+                    | None => None
+                    end
+                end
+            end
         | _ => None
         end
     end.
@@ -1620,18 +1888,34 @@ Export Deserialization.
 
 (** ========================================================================= *)
 (** PART XVII: HASHING                                                        *)
-(** Deterministic hash for consensus/integrity.                               *)
+(** FNV-1a inspired hash. For production, extract to OCaml crypto library.    *)
 (** ========================================================================= *)
 
 Module Hashing.
 
-  Definition hash_combine (h1 h2 : nat) : nat :=
-    h2 * 31 + h1.
+  Fixpoint nat_xor_aux (fuel a b : nat) : nat :=
+    match fuel with
+    | 0 => 0
+    | S fuel' =>
+        let bit_a := a mod 2 in
+        let bit_b := b mod 2 in
+        let xor_bit := if (bit_a =? bit_b) then 0 else 1 in
+        xor_bit + 2 * nat_xor_aux fuel' (a / 2) (b / 2)
+    end.
+
+  Definition nat_xor (a b : nat) : nat :=
+    nat_xor_aux 64 a b.
+
+  Definition fnv_offset : nat := 2166136261.
+  Definition fnv_prime : nat := 16777619.
+
+  Definition hash_byte (h byte : nat) : nat :=
+    (nat_xor h byte) * fnv_prime.
 
   Fixpoint hash_list (l : list nat) : nat :=
     match l with
-    | [] => 0
-    | x :: xs => hash_combine x (hash_list xs)
+    | [] => fnv_offset
+    | x :: xs => hash_byte (hash_list xs) x
     end.
 
   Definition hash_pred (p : ScopePred) : nat :=
@@ -1641,7 +1925,7 @@ Module Hashing.
     hash_list (serialize_tree t).
 
   Definition hash_halakha (ch : CompiledHalakha) : nat :=
-    hash_combine (ch_id ch) (hash_tree (ch_derivation ch)).
+    hash_byte (hash_tree (ch_derivation ch)) (ch_id ch).
 
 End Hashing.
 
