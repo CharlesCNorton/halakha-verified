@@ -17,11 +17,7 @@
 (** TODO:
     - Replace bare nat for severity/obligation with semantic types.
     - Enforce child arities at type level.
-    - Create distinct certificate type for KlalSheTzarichLeFrat.
-    - Create distinct certificate type for PratSheTzarichLeKlal.
-    - Consolidate cert_anchored_verses and cert_verses.
     - Fix ShneiKetuvimMakhchishim to find resolution.
-    - Fix Dayo arithmetic.
     - Model Kal VaChomer as genuine inference.
     - Model Gezerah Shavah as halakha transfer.
     - Replace similar_cases_b with richer analogy for BinyanAv.
@@ -429,6 +425,18 @@ Module Certificates.
     puk_expansion : ScopePred
   }.
 
+  Record KTFCert := mkKTFCert {
+    ktf_klal_verse : VerseId;
+    ktf_prat_verse : VerseId;
+    ktf_clarification : ScopePred
+  }.
+
+  Record PTKCert := mkPTKCert {
+    ptk_prat_verse : VerseId;
+    ptk_klal_verse : VerseId;
+    ptk_clarification : ScopePred
+  }.
+
   Record KFKCert := mkKFKCert {
     kfk_klal1_verse : VerseId;
     kfk_prat_verse : VerseId;
@@ -466,8 +474,8 @@ Module Certificates.
     | CertKUF : KUFCert -> NodeCert KlalUFrat
     | CertPUK : PUKCert -> NodeCert PratUKlal
     | CertKFK : KFKCert -> NodeCert KlalUFratUKlal
-    | CertKTF : KUFCert -> NodeCert KlalSheTzarichLeFrat
-    | CertPTK : PUKCert -> NodeCert PratSheTzarichLeKlal
+    | CertKTF : KTFCert -> NodeCert KlalSheTzarichLeFrat
+    | CertPTK : PTKCert -> NodeCert PratSheTzarichLeKlal
     | CertDSH : DSHCert -> NodeCert DavarSheHayahBiKlal
     | CertDYL : DYLCert -> NodeCert DavarYatzaLeLamed
     | CertDMI : DMICert -> NodeCert DavarHaLamedMeInyano
@@ -509,8 +517,8 @@ Module DerivationTrees.
     | CertKUF w => [kuf_klal_verse w; kuf_prat_verse w]
     | CertPUK w => [puk_prat_verse w; puk_klal_verse w]
     | CertKFK w => [kfk_klal1_verse w; kfk_prat_verse w; kfk_klal2_verse w]
-    | CertKTF w => [kuf_klal_verse w; kuf_prat_verse w]
-    | CertPTK w => [puk_prat_verse w; puk_klal_verse w]
+    | CertKTF w => [ktf_klal_verse w; ktf_prat_verse w]
+    | CertPTK w => [ptk_prat_verse w; ptk_klal_verse w]
     | CertDSH _ => []
     | CertDYL w => [dyl_teaching_verse w]
     | CertDMI w => [dmi_verse w; dmi_context_verse w]
@@ -595,8 +603,8 @@ Module Interpreter.
         | CertKVC w =>
             let dayo_ok :=
               match kvc_dayo w with
-              | DayoStrict => subj_obligation_strength (kvc_lenient w) <=? subj_obligation_strength s
-              | DayoExtend n => subj_obligation_strength (kvc_lenient w) <=? subj_obligation_strength s + n
+              | DayoStrict => subj_obligation_strength s <=? subj_obligation_strength (kvc_lenient w)
+              | DayoExtend n => subj_obligation_strength s <=? subj_obligation_strength (kvc_lenient w) + n
               end in
             let pirka_ok :=
               match kvc_pirka w with
@@ -617,9 +625,9 @@ Module Interpreter.
         | CertKFK w =>
             base && eval_pred (kfk_similarity w) s
         | CertKTF w =>
-            base && eval_pred (kuf_restriction w) s
+            base && eval_pred (ktf_clarification w) s
         | CertPTK w =>
-            base && eval_pred (puk_expansion w) s
+            base && eval_pred (ptk_clarification w) s
         | CertDSH w =>
             base && negb (eval_pred (dsh_exception w) s)
         | CertDYL w =>
@@ -674,6 +682,16 @@ Module Validity.
     verse_is_particular (vc_verses ctx) (puk_prat_verse w) &&
     verse_is_general (vc_verses ctx) (puk_klal_verse w) &&
     verses_adjacent (vc_verses ctx) (puk_prat_verse w) (puk_klal_verse w).
+
+  Definition valid_ktf (ctx : ValidationContext) (w : KTFCert) : bool :=
+    verse_is_general (vc_verses ctx) (ktf_klal_verse w) &&
+    verse_is_particular (vc_verses ctx) (ktf_prat_verse w) &&
+    verses_adjacent (vc_verses ctx) (ktf_klal_verse w) (ktf_prat_verse w).
+
+  Definition valid_ptk (ctx : ValidationContext) (w : PTKCert) : bool :=
+    verse_is_particular (vc_verses ctx) (ptk_prat_verse w) &&
+    verse_is_general (vc_verses ctx) (ptk_klal_verse w) &&
+    verses_adjacent (vc_verses ctx) (ptk_prat_verse w) (ptk_klal_verse w).
 
   Fixpoint pred_trivially_true (p : ScopePred) : bool :=
     match p with
@@ -770,8 +788,8 @@ Module Validity.
         verse_is_general (vc_verses ctx) (kfk_klal1_verse w) &&
         verse_is_particular (vc_verses ctx) (kfk_prat_verse w) &&
         verse_is_general (vc_verses ctx) (kfk_klal2_verse w)
-    | CertKTF w => valid_kuf ctx w
-    | CertPTK w => valid_puk ctx w
+    | CertKTF w => valid_ktf ctx w
+    | CertPTK w => valid_ptk ctx w
     | CertDSH w => valid_dsh w
     | CertDYL w => valid_dyl ctx w
     | CertDMI w =>
@@ -790,23 +808,6 @@ Module Validity.
   Definition children_leaf_verses (children : list DerivationTree) : list VerseId :=
     flat_map dt_leaf_verses children.
 
-  Definition cert_anchored_verses (m : Middah) (cert : NodeCert m) : list VerseId :=
-    match cert with
-    | CertKVC _ => []
-    | CertGS w => [gs_verse1 w; gs_verse2 w]
-    | CertBA _ => []
-    | CertBA2 _ => []
-    | CertKUF w => [kuf_klal_verse w; kuf_prat_verse w]
-    | CertPUK w => [puk_prat_verse w; puk_klal_verse w]
-    | CertKFK w => [kfk_klal1_verse w; kfk_prat_verse w; kfk_klal2_verse w]
-    | CertKTF w => [kuf_klal_verse w; kuf_prat_verse w]
-    | CertPTK w => [puk_prat_verse w; puk_klal_verse w]
-    | CertDSH _ => []
-    | CertDYL w => [dyl_teaching_verse w]
-    | CertDMI w => [dmi_verse w; dmi_context_verse w]
-    | CertSKM w => [skm_verse1 w; skm_verse2 w; skm_verse3 w]
-    end.
-
   Fixpoint dt_valid (ctx : ValidationContext) (t : DerivationTree) : bool :=
     match t with
     | DTLeaf vid _ =>
@@ -817,7 +818,7 @@ Module Validity.
     | DTNode m cert children =>
         valid_cert ctx m cert &&
         (length children =? dt_requires_children m) &&
-        verses_anchored (cert_anchored_verses m cert) (children_leaf_verses children) &&
+        verses_anchored (cert_verses m cert) (children_leaf_verses children) &&
         forallb (dt_valid ctx) children
     end.
 
@@ -1111,7 +1112,7 @@ Module Examples.
   Proof. reflexivity. Qed.
 
   Definition kvc_melacha : KVCCert :=
-    mkKVCCert subj_yom_tov subj_shabbat DayoStrict NoPirka.
+    mkKVCCert subj_yom_tov subj_shabbat (DayoExtend 5) NoPirka.
 
   Definition hal_melacha_kvc : CompiledHalakha :=
     transform_kvc hal_melacha kvc_melacha 2.
@@ -1287,6 +1288,12 @@ Module Serialization.
   Definition serialize_puk_cert (w : PUKCert) : list nat :=
     [puk_prat_verse w; puk_klal_verse w] ++ serialize_pred (puk_expansion w).
 
+  Definition serialize_ktf_cert (w : KTFCert) : list nat :=
+    [ktf_klal_verse w; ktf_prat_verse w] ++ serialize_pred (ktf_clarification w).
+
+  Definition serialize_ptk_cert (w : PTKCert) : list nat :=
+    [ptk_prat_verse w; ptk_klal_verse w] ++ serialize_pred (ptk_clarification w).
+
   Definition serialize_dsh_cert (w : DSHCert) : list nat :=
     serialize_pred (dsh_exception w).
 
@@ -1347,8 +1354,8 @@ Module Serialization.
           | CertPUK w => serialize_puk_cert w
           | CertKFK w => [kfk_klal1_verse w; kfk_prat_verse w; kfk_klal2_verse w] ++
                          serialize_pred (kfk_similarity w)
-          | CertKTF w => serialize_kuf_cert w
-          | CertPTK w => serialize_puk_cert w
+          | CertKTF w => serialize_ktf_cert w
+          | CertPTK w => serialize_ptk_cert w
           | CertDSH w => serialize_dsh_cert w
           | CertDYL w => [dyl_teaching_verse w] ++ serialize_pred (dyl_modifier w)
           | CertDMI w => [dmi_verse w; dmi_context_verse w] ++
@@ -1619,6 +1626,28 @@ Module Deserialization.
         match deserialize_pred rest with
         | Some (expansion, rest') =>
             Some (mkPUKCert prat klal expansion, rest')
+        | None => None
+        end
+    | _ => None
+    end.
+
+  Definition deserialize_ktf_cert (l : list nat) : ParseResult KTFCert :=
+    match l with
+    | klal :: prat :: rest =>
+        match deserialize_pred rest with
+        | Some (clarification, rest') =>
+            Some (mkKTFCert klal prat clarification, rest')
+        | None => None
+        end
+    | _ => None
+    end.
+
+  Definition deserialize_ptk_cert (l : list nat) : ParseResult PTKCert :=
+    match l with
+    | prat :: klal :: rest =>
+        match deserialize_pred rest with
+        | Some (clarification, rest') =>
+            Some (mkPTKCert prat klal clarification, rest')
         | None => None
         end
     | _ => None
@@ -1973,12 +2002,12 @@ Module Deserialization.
                     | None => None
                     end
                 | KlalSheTzarichLeFrat =>
-                    match deserialize_kuf_cert rest with
+                    match deserialize_ktf_cert rest with
                     | Some (c, r) => build (CertKTF c) r
                     | None => None
                     end
                 | PratSheTzarichLeKlal =>
-                    match deserialize_puk_cert rest with
+                    match deserialize_ptk_cert rest with
                     | Some (c, r) => build (CertPTK c) r
                     | None => None
                     end
