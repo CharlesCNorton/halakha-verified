@@ -3,15 +3,7 @@
 (*                        Talmudic Hermeneutics                               *)
 (*                   Certified Computational Halakha                          *)
 (*                                                                            *)
-(*     A machine-executable semantics for the 13 middot of Rabbi Ishmael,     *)
-(*     designed for autonomous non-human-mediated legal systems.              *)
-(*                                                                            *)
-(*     Architecture:                                                          *)
-(*       - ScopePred: finite DSL for scope predicates (no closures)           *)
-(*       - NodeCert: certificates carry only data, not code                   *)
-(*       - dt_eval: compositional interpreter from children + data            *)
-(*       - dt_valid: checks middah admissibility (mesorah, adjacency, etc.)   *)
-(*       - CompiledHalakha: scope + tree + soundness + validity               *)
+(*     A machine-executable semantics for the 13 middot of Rabbi Ishmael      *)
 (*                                                                            *)
 (*     "Rabbi Ishmael says: By thirteen middot the Torah is expounded."       *)
 (*     - Baraita of Rabbi Ishmael, Sifra 1:1                                  *)
@@ -63,34 +55,36 @@ Module Primitives.
 
   Record Subject := mkSubject {
     subj_id : SubjectId;
-    subj_severity : nat;
+    subj_case_severity : nat;
+    subj_obligation_strength : nat;
     subj_category : CategoryId;
     subj_time : TimeContext
   }.
 
   Definition subject_eqb (s1 s2 : Subject) : bool :=
     (subj_id s1 =? subj_id s2) &&
-    (subj_severity s1 =? subj_severity s2) &&
+    (subj_case_severity s1 =? subj_case_severity s2) &&
+    (subj_obligation_strength s1 =? subj_obligation_strength s2) &&
     (subj_category s1 =? subj_category s2) &&
     (subj_time s1 =? subj_time s2).
 
   Definition stricter_b (s1 s2 : Subject) : bool :=
-    subj_severity s2 <? subj_severity s1.
+    subj_case_severity s2 <? subj_case_severity s1.
 
   Definition same_category_b (s1 s2 : Subject) : bool :=
     subj_category s1 =? subj_category s2.
 
   Definition similar_cases_b (s1 s2 : Subject) : bool :=
-    (subj_severity s1 =? subj_severity s2) && same_category_b s1 s2 &&
+    (subj_case_severity s1 =? subj_case_severity s2) && same_category_b s1 s2 &&
     (subj_time s1 =? subj_time s2).
 
   Lemma subject_eqb_eq : forall s1 s2, subject_eqb s1 s2 = true <-> s1 = s2.
   Proof.
-    intros [id1 sev1 cat1 t1] [id2 sev2 cat2 t2].
+    intros [id1 csev1 osev1 cat1 t1] [id2 csev2 osev2 cat2 t2].
     unfold subject_eqb. simpl.
     rewrite !Bool.andb_true_iff, !Nat.eqb_eq.
     split.
-    - intros [[[Hid Hsev] Hcat] Ht]. congruence.
+    - intros [[[[Hid Hcsev] Hosev] Hcat] Ht]. congruence.
     - intro H. inversion H. auto.
   Qed.
 
@@ -127,9 +121,9 @@ Module ScopeDSL.
     | PredFalse => false
     | PredIdEq id => subj_id s =? id
     | PredCategoryEq cat => subj_category s =? cat
-    | PredSeverityGe n => n <=? subj_severity s
-    | PredSeverityLe n => subj_severity s <=? n
-    | PredSeverityEq n => subj_severity s =? n
+    | PredSeverityGe n => n <=? subj_case_severity s
+    | PredSeverityLe n => subj_case_severity s <=? n
+    | PredSeverityEq n => subj_case_severity s =? n
     | PredTimeEq t => subj_time s =? t
     | PredSimilarTo ref => similar_cases_b s ref
     | PredStricterThan ref => stricter_b s ref
@@ -243,6 +237,11 @@ Export MiddotDef.
 (** PART IV: MESORAH AND VERSE REGISTRY                                       *)
 (** ========================================================================= *)
 
+Inductive MufnehLevel : Type :=
+  | MufnehNone : MufnehLevel
+  | MufnehOne : MufnehLevel
+  | MufnehBoth : MufnehLevel.
+
 Module Registry.
 
   Record MesorahEntry := mkMesorahEntry {
@@ -257,6 +256,34 @@ Module Registry.
     existsb (fun e =>
       ((mes_verse1 e =? v1) && (mes_verse2 e =? v2) && (mes_root e =? root)) ||
       ((mes_verse1 e =? v2) && (mes_verse2 e =? v1) && (mes_root e =? root))
+    ) reg.
+
+  Record MufnehEntry := mkMufnehEntry {
+    muf_verse1 : VerseId;
+    muf_verse2 : VerseId;
+    muf_level : MufnehLevel
+  }.
+
+  Definition MufnehRegistry := list MufnehEntry.
+
+  Definition mufneh_verified (reg : MufnehRegistry) (v1 v2 : VerseId) (level : MufnehLevel) : bool :=
+    existsb (fun e =>
+      ((muf_verse1 e =? v1) && (muf_verse2 e =? v2) &&
+       match muf_level e, level with
+       | MufnehBoth, _ => true
+       | MufnehOne, MufnehOne => true
+       | MufnehOne, MufnehNone => true
+       | MufnehNone, MufnehNone => true
+       | _, _ => false
+       end) ||
+      ((muf_verse1 e =? v2) && (muf_verse2 e =? v1) &&
+       match muf_level e, level with
+       | MufnehBoth, _ => true
+       | MufnehOne, MufnehOne => true
+       | MufnehOne, MufnehNone => true
+       | MufnehNone, MufnehNone => true
+       | _, _ => false
+       end)
     ) reg.
 
   Record VerseEntry := mkVerseEntry {
@@ -307,11 +334,6 @@ Module Certificates.
   Inductive DayoBound : Type :=
     | DayoStrict : DayoBound
     | DayoExtend : nat -> DayoBound.
-
-  Inductive MufnehLevel : Type :=
-    | MufnehNone : MufnehLevel
-    | MufnehOne : MufnehLevel
-    | MufnehBoth : MufnehLevel.
 
   Inductive PirkaStatus : Type :=
     | NoPirka : PirkaStatus
@@ -452,6 +474,8 @@ Module DerivationTrees.
   Definition dt_all_verses (t : DerivationTree) : list VerseId :=
     dt_leaf_verses t ++ dt_cert_verses t.
 
+  (** TODO: KUF/PUK/KTF/PTK should require 2 children (one per verse),
+      but this requires redesigning the transformers. Currently 1 child. *)
   Definition dt_requires_children (m : Middah) : nat :=
     match m with
     | ShneiKetuvimMakhchishim => 2
@@ -497,39 +521,47 @@ Module Interpreter.
     | DTNode m cert children =>
         let base :=
           match m with
-          | ShneiKetuvimMakhchishim => forallb (fun c => dt_eval c s) children
-          | KlalUFratUKlal => forallb (fun c => dt_eval c s) children
+          | ShneiKetuvimMakhchishim =>
+              match children with
+              | [] => false
+              | _ => forallb (fun c => dt_eval c s) children
+              end
+          | KlalUFratUKlal =>
+              match children with
+              | [] => false
+              | _ => forallb (fun c => dt_eval c s) children
+              end
           | _ => existsb (fun c => dt_eval c s) children
           end in
         match cert with
         | CertKVC w =>
             let dayo_ok :=
               match kvc_dayo w with
-              | DayoStrict => subj_severity s <=? subj_severity (kvc_lenient w)
-              | DayoExtend n => subj_severity s <=? subj_severity (kvc_lenient w) + n
+              | DayoStrict => subj_obligation_strength (kvc_lenient w) <=? subj_obligation_strength s
+              | DayoExtend n => subj_obligation_strength (kvc_lenient w) <=? subj_obligation_strength s + n
               end in
             let pirka_ok :=
               match kvc_pirka w with
               | NoPirka => true
               | HasPirka refutation => negb (eval_pred refutation s)
               end in
-            base || (same_category_b s (kvc_strict w) && stricter_b s (kvc_lenient w) && dayo_ok && pirka_ok)
+            (base || (same_category_b s (kvc_strict w) && stricter_b s (kvc_lenient w))) && dayo_ok && pirka_ok
         | CertGS w =>
-            base || eval_pred (gs_transfer w) s
+            base && eval_pred (gs_transfer w) s
         | CertBA w =>
-            base || similar_cases_b s (ba_paradigm w)
+            base && similar_cases_b s (ba_paradigm w)
         | CertBA2 w =>
-            base || (subj_category s =? ba2_common_category w)
+            base && (subj_category s =? ba2_common_category w)
         | CertKUF w =>
             base && eval_pred (kuf_restriction w) s
         | CertPUK w =>
-            base || eval_pred (puk_expansion w) s
+            base && eval_pred (puk_expansion w) s
         | CertKFK w =>
             base && eval_pred (kfk_similarity w) s
         | CertKTF w =>
             base && eval_pred (kuf_restriction w) s
         | CertPTK w =>
-            base || eval_pred (puk_expansion w) s
+            base && eval_pred (puk_expansion w) s
         | CertDSH w =>
             base && negb (eval_pred (dsh_exception w) s)
         | CertDYL w =>
@@ -554,6 +586,7 @@ Module Validity.
 
   Record ValidationContext := mkValidationContext {
     vc_mesorah : MesorahRegistry;
+    vc_mufneh : MufnehRegistry;
     vc_verses : VerseRegistry
   }.
 
@@ -562,10 +595,16 @@ Module Validity.
     stricter_b (kvc_strict w) (kvc_lenient w).
 
   Definition valid_gs (ctx : ValidationContext) (w : GSCert) : bool :=
-    match gs_mufneh w with
-    | MufnehBoth => true
-    | MufnehOne => mesorah_authorized (vc_mesorah ctx) (gs_verse1 w) (gs_verse2 w) (gs_root w)
-    | MufnehNone => mesorah_authorized (vc_mesorah ctx) (gs_verse1 w) (gs_verse2 w) (gs_root w)
+    match verse_lookup (vc_verses ctx) (gs_verse1 w),
+          verse_lookup (vc_verses ctx) (gs_verse2 w) with
+    | Some _, Some _ =>
+        mufneh_verified (vc_mufneh ctx) (gs_verse1 w) (gs_verse2 w) (gs_mufneh w) &&
+        match gs_mufneh w with
+        | MufnehBoth => true
+        | MufnehOne => mesorah_authorized (vc_mesorah ctx) (gs_verse1 w) (gs_verse2 w) (gs_root w)
+        | MufnehNone => mesorah_authorized (vc_mesorah ctx) (gs_verse1 w) (gs_verse2 w) (gs_root w)
+        end
+    | _, _ => false
     end.
 
   Definition valid_kuf (ctx : ValidationContext) (w : KUFCert) : bool :=
@@ -743,6 +782,22 @@ Module CompiledLaw.
     intro vh. unfold dt_admissible, vh_audit. exact (vh_valid vh).
   Qed.
 
+  Definition SafeEval (vh : ValidatedHalakha) (s : Subject) : bool :=
+    dt_eval (vh_audit vh) s.
+
+  Lemma SafeEval_correct : forall vh s,
+    SafeEval vh s = vh_applies vh s.
+  Proof.
+    intros vh s. unfold SafeEval, vh_applies, vh_audit. apply ch_applies_eval.
+  Qed.
+
+  Lemma SafeEval_only_on_valid : forall vh s,
+    dt_admissible (vh_context vh) (vh_audit vh) ->
+    SafeEval vh s = dt_eval (ch_derivation (vh_halakha vh)) s.
+  Proof.
+    intros vh s _. reflexivity.
+  Qed.
+
 End CompiledLaw.
 
 Export CompiledLaw.
@@ -917,9 +972,9 @@ Export BaseDerivation.
 
 Module Examples.
 
-  Definition subj_shabbat : Subject := mkSubject 1 10 1 time_shabbat.
-  Definition subj_yom_tov : Subject := mkSubject 2 5 1 time_yom_tov.
-  Definition subj_chol : Subject := mkSubject 3 1 1 time_weekday.
+  Definition subj_shabbat : Subject := mkSubject 1 10 10 1 time_shabbat.
+  Definition subj_yom_tov : Subject := mkSubject 2 5 5 1 time_yom_tov.
+  Definition subj_chol : Subject := mkSubject 3 1 1 1 time_weekday.
 
   Definition scope_melacha : ScopePred :=
     PredAnd (PredCategoryEq 1) (PredSeverityGe 5).
@@ -952,8 +1007,10 @@ Module Examples.
 
   Definition test_mesorah_registry : MesorahRegistry := [].
 
+  Definition test_mufneh_registry : MufnehRegistry := [].
+
   Definition test_ctx : ValidationContext :=
-    mkValidationContext test_mesorah_registry test_verse_registry.
+    mkValidationContext test_mesorah_registry test_mufneh_registry test_verse_registry.
 
   Lemma base_valid : dt_valid test_ctx (ch_derivation hal_melacha) = true.
   Proof. reflexivity. Qed.
@@ -1007,16 +1064,16 @@ Module Serialization.
     | PredSeverityLe n => [5; n]
     | PredSeverityEq n => [6; n]
     | PredTimeEq t => [7; t]
-    | PredSimilarTo s => [8; subj_id s; subj_severity s; subj_category s; subj_time s]
-    | PredStricterThan s => [9; subj_id s; subj_severity s; subj_category s; subj_time s]
-    | PredSameCategory s => [10; subj_id s; subj_severity s; subj_category s; subj_time s]
+    | PredSimilarTo s => [8; subj_id s; subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s]
+    | PredStricterThan s => [9; subj_id s; subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s]
+    | PredSameCategory s => [10; subj_id s; subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s]
     | PredAnd p1 p2 => [11] ++ serialize_pred p1 ++ [255] ++ serialize_pred p2
     | PredOr p1 p2 => [12] ++ serialize_pred p1 ++ [255] ++ serialize_pred p2
     | PredNot p1 => [13] ++ serialize_pred p1
     end.
 
   Definition serialize_subject (s : Subject) : list nat :=
-    [subj_id s; subj_severity s; subj_category s; subj_time s].
+    [subj_id s; subj_case_severity s; subj_obligation_strength s; subj_category s; subj_time s].
 
   Definition serialize_pirka (p : PirkaStatus) : list nat :=
     match p with
@@ -1117,7 +1174,7 @@ Module Deserialization.
 
   Definition deserialize_subject (l : list nat) : ParseResult Subject :=
     match l with
-    | id :: sev :: cat :: t :: rest => Some (mkSubject id sev cat t, rest)
+    | id :: csev :: osev :: cat :: t :: rest => Some (mkSubject id csev osev cat t, rest)
     | _ => None
     end.
 
@@ -1140,12 +1197,12 @@ Module Deserialization.
         | 5 :: n :: rest => Some (PredSeverityLe n, rest)
         | 6 :: n :: rest => Some (PredSeverityEq n, rest)
         | 7 :: t :: rest => Some (PredTimeEq t, rest)
-        | 8 :: id :: sev :: cat :: t :: rest =>
-            Some (PredSimilarTo (mkSubject id sev cat t), rest)
-        | 9 :: id :: sev :: cat :: t :: rest =>
-            Some (PredStricterThan (mkSubject id sev cat t), rest)
-        | 10 :: id :: sev :: cat :: t :: rest =>
-            Some (PredSameCategory (mkSubject id sev cat t), rest)
+        | 8 :: id :: csev :: osev :: cat :: t :: rest =>
+            Some (PredSimilarTo (mkSubject id csev osev cat t), rest)
+        | 9 :: id :: csev :: osev :: cat :: t :: rest =>
+            Some (PredStricterThan (mkSubject id csev osev cat t), rest)
+        | 10 :: id :: csev :: osev :: cat :: t :: rest =>
+            Some (PredSameCategory (mkSubject id csev osev cat t), rest)
         | 11 :: rest =>
             match deserialize_pred_aux fuel' rest with
             | Some (p1, r1) =>
@@ -1202,9 +1259,9 @@ Module Deserialization.
     | PredSeverityLe _ => 2
     | PredSeverityEq _ => 2
     | PredTimeEq _ => 2
-    | PredSimilarTo _ => 5
-    | PredStricterThan _ => 5
-    | PredSameCategory _ => 5
+    | PredSimilarTo _ => 6
+    | PredStricterThan _ => 6
+    | PredSameCategory _ => 6
     | PredAnd p1 p2 => 1 + serialize_pred_length p1 + 1 + serialize_pred_length p2
     | PredOr p1 p2 => 1 + serialize_pred_length p1 + 1 + serialize_pred_length p2
     | PredNot p1 => 1 + serialize_pred_length p1
@@ -1229,7 +1286,7 @@ Module Deserialization.
     destruct x as [|[|[|[|[|[|[|[|[|[|[|[|[|[|n]]]]]]]]]]]]]].
     all: try reflexivity.
     all: try (cbn -[deserialize_pred_aux]; destruct xs; [exact I|reflexivity]).
-    all: try (cbn -[deserialize_pred_aux]; destruct xs as [|? [|? [|? [|? ?]]]]; try exact I; reflexivity).
+    all: try (cbn -[deserialize_pred_aux]; destruct xs as [|? [|? [|? [|? [|? ?]]]]]; try exact I; reflexivity).
     - pose proof (IH xs) as IHxs.
       simpl.
       destruct (deserialize_pred_aux fuel xs) as [[p1 r1]|] eqn:E1; [|exact I].
@@ -1371,7 +1428,7 @@ Export Deserialization.
 Module Hashing.
 
   Definition hash_combine (h1 h2 : nat) : nat :=
-    h1 * 31 + h2.
+    h2 * 31 + h1.
 
   Fixpoint hash_list (l : list nat) : nat :=
     match l with
