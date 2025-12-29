@@ -15,11 +15,10 @@
 (******************************************************************************)
 
 (** TODO:                                                                      *)
-(**   1. Implement length-prefix encoding for full nat range support.          *)
-(**   2. Complete deserialize_tree for nodes (not just leaves).                *)
-(**   3. Replace polynomial hash with cryptographic hash function.             *)
-(**   4. Add precedence rules for conflicting sources (stam vs yachid, rov).   *)
-(**   5. Change KUF/PUK/KTF/PTK arity to 2 children with transformer redesign. *)
+(**   1. Complete deserialize_tree for nodes (not just leaves).                *)
+(**   2. Replace polynomial hash with cryptographic hash function.             *)
+(**   3. Add precedence rules for conflicting sources (stam vs yachid, rov).   *)
+(**   4. Change KUF/PUK/KTF/PTK arity to 2 children with transformer redesign. *)
 
 Require Import Coq.Lists.List.
 Require Import Coq.Arith.PeanoNat.
@@ -1138,7 +1137,24 @@ Export Properties.
 
 Module Serialization.
 
-  Definition schema_version : nat := 1.
+  Definition schema_version : nat := 2.
+
+  Fixpoint nat_to_bytes_aux (fuel n : nat) : list nat :=
+    match fuel with
+    | 0 => []
+    | S fuel' =>
+        match n with
+        | 0 => []
+        | _ => (n mod 256) :: nat_to_bytes_aux fuel' (n / 256)
+        end
+    end.
+
+  Definition nat_to_bytes (n : nat) : list nat :=
+    nat_to_bytes_aux (S n) n.
+
+  Definition serialize_nat (n : nat) : list nat :=
+    let bytes := nat_to_bytes n in
+    length bytes :: bytes.
 
   Definition serialize_versioned (data : list nat) : list nat :=
     schema_version :: data.
@@ -1262,13 +1278,44 @@ Export Serialization.
 (** ========================================================================= *)
 (** PART XVI: DESERIALIZATION                                                 *)
 (** Inverse of serialization with round-trip proofs.                          *)
-(** LIMITATION: Uses 255 as separator; nat fields must be < 255 for safety.   *)
-(** Future: length-prefix encoding for full nat range support.                *)
 (** ========================================================================= *)
 
 Module Deserialization.
 
   Definition ParseResult (A : Type) := option (A * list nat).
+
+  Fixpoint bytes_to_nat_aux (bytes : list nat) (acc : nat) (mult : nat) : nat :=
+    match bytes with
+    | [] => acc
+    | b :: bs => bytes_to_nat_aux bs (acc + b * mult) (mult * 256)
+    end.
+
+  Definition bytes_to_nat (bytes : list nat) : nat :=
+    bytes_to_nat_aux bytes 0 1.
+
+  Fixpoint firstn (n : nat) (l : list nat) : list nat :=
+    match n, l with
+    | 0, _ => []
+    | S n', x :: xs => x :: firstn n' xs
+    | S _, [] => []
+    end.
+
+  Fixpoint skipn (n : nat) (l : list nat) : list nat :=
+    match n, l with
+    | 0, _ => l
+    | S n', _ :: xs => skipn n' xs
+    | S _, [] => []
+    end.
+
+  Definition deserialize_nat (l : list nat) : ParseResult nat :=
+    match l with
+    | len :: rest =>
+        if len <=? length rest then
+          Some (bytes_to_nat (firstn len rest), skipn len rest)
+        else
+          None
+    | [] => None
+    end.
 
   Definition deserialize_subject (l : list nat) : ParseResult Subject :=
     match l with
@@ -1512,6 +1559,26 @@ Module Deserialization.
     deserialize_subject (serialize_subject s) = Some (s, []).
   Proof.
     intro s. destruct s as [id csev osev cat t]. reflexivity.
+  Qed.
+
+  Lemma firstn_app_skipn : forall n (l : list nat),
+    n <= length l -> firstn n l ++ skipn n l = l.
+  Proof.
+    induction n; intros l Hle.
+    - reflexivity.
+    - destruct l as [|x xs].
+      + simpl in Hle. lia.
+      + simpl. f_equal. apply IHn. simpl in Hle. lia.
+  Qed.
+
+  Lemma length_firstn : forall n (l : list nat),
+    n <= length l -> length (firstn n l) = n.
+  Proof.
+    induction n; intros l Hle.
+    - reflexivity.
+    - destruct l as [|x xs].
+      + simpl in Hle. lia.
+      + simpl. f_equal. apply IHn. simpl in Hle. lia.
   Qed.
 
   (** Deserialize a derivation tree.
